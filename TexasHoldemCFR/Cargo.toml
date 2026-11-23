@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 input_method = "0.1.0"
-NueralArenaRS = { git = "https://github.com/had2020/NueralArenaRS.git" }
+NueralBinarizedRS = { git = "https://github.com/had2020/NueralBinarizedRS.git" }

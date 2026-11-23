@@ -3,9 +3,9 @@
 version = 4
 
 [[package]]
-name = "NueralArenaRS"
+name = "NueralBinarizedRS"
 version = "0.0.1"
-source = "git+https://github.com/had2020/NueralArenaRS.git#3dba31c5aabd440966a6582607616a342b38e6ea"
+source = "git+https://github.com/had2020/NueralBinarizedRS.git#17238902ca1fae8b937217389d2313e5e4e31a10"
 dependencies = [
  "input_method",
  "rand",
@@ -17,7 +17,7 @@ dependencies = [
 name = "TexasHoldemCFR"
 version = "0.0.1"
 dependencies = [
- "NueralArenaRS",
+ "NueralBinarizedRS",
  "input_method",
 ]
 
