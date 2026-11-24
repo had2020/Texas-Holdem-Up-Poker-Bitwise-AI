@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 input_method = "0.1.0"
-NueralBinarizedRS = { git = "https://github.com/had2020/NueralBinarizedRS.git" }
 rand = "0.10.4"
+NueralBinarizedRS = { git = "https://github.com/had2020/NueralBinarizedRS.git" }

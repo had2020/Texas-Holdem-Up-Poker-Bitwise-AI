@@ -28,6 +28,15 @@ pub enum CardSymbol {
     Spades,
 }
 
+#[repr(u8)]
+#[derive(Copy, Clone, Debug)]
+pub enum Action {
+    Fold,
+    Check,
+    Call,
+    Bet,
+}
+
 pub fn card_to_magnitude(card_num: CardNum, card_symbol: CardSymbol) -> u16 {
     /*
     let mut r0: u16 = 0;
@@ -46,22 +55,34 @@ pub fn card_to_magnitude(card_num: CardNum, card_symbol: CardSymbol) -> u16 {
     rank_bits | (card_symbol as u16)
 }
 
+// https://www.cardplayer.com/rules-of-poker/how-to-play-poker/games/texas-holdem
 fn main() {
     let mut rng = rng();
 
-    // other player hole cards
-    let mut enemy_hole0: u16 = rng.random();
-    let mut enemy_hole1: u16 = rng.random();
+    let training_epochs: usize = 2000;
+    for epoch in 0..training_epochs {
+        println!("{:?}", epoch);
+        // other player hole cards
+        let mut enemy_hole0: u16 = rng.random();
+        let mut enemy_hole1: u16 = rng.random();
+        let mut enmey_chips: u8 = 16;
 
-    // https://www.cardplayer.com/rules-of-poker/how-to-play-poker/games/texas-holdem
-    // game view
-    let mut flop0: u16 = rng.random();
-    let mut flop1: u16 = rng.random();
-    let mut flop2: u16 = rng.random();
-    let mut turn: u16 = rng.random();
-    let mut river: u16 = rng.random();
-    let mut hole0: u16 = rng.random();
-    let mut hole1: u16 = rng.random();
+        // game view
+        let mut flop0: u16 = rng.random();
+        let mut flop1: u16 = rng.random();
+        let mut flop2: u16 = rng.random();
 
-    let mut layer0 = BinarizedLayer::new();
+        let mut turn: u16 = rng.random();
+        let mut river: u16 = rng.random();
+        let mut pot: u8 = 0;
+
+        let mut hole0: u16 = rng.random();
+        let mut hole1: u16 = rng.random();
+        let mut player_chips: u8 = 16;
+
+        let mut layer0 = BinarizedLayer::new(3);
+        let mut layer1 = BinarizedLayer::new(6);
+        let mut layer2 = BinarizedLayer::new(3);
+        let mut layer3 = BinarizedLayer::new(1);
+    }
 }
