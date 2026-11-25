@@ -146,7 +146,7 @@ fn main() {
         // other player hole cards
         let enemy_hole0: u16 = DECK[seed ^ 7];
         let enemy_hole1: u16 = DECK[seed ^ 32];
-        let mut enemy_chips: u16 = 0b1111_1111;
+        let mut enemy_chips: u8 = 0b1111_1111;
         let mut enemy_pot: u16 = 0;
 
         // game view
@@ -159,45 +159,63 @@ fn main() {
 
         let hole0: u16 = DECK[seed ^ 17];
         let hole1: u16 = DECK[seed ^ 2];
-        let mut player_chips: u16 = 0b1111_1111;
+        let mut player_chips: u8 = 0b1111_1111;
         let mut player_pot: u16 = 0;
 
         // https://officialpokerrules.com/hand-rankings/
         let hand_rank: u16 = 0;
 
+        const NUM_MASK: u16 = 0b1_1111_1111_1111;
+        const SYMBOL_MASK: u16 = 0b0_0000_0000_0000_011;
+
+        let hand_rank: u16 = 0; // 0 is high card
+
         // Royal Flush
-        let royal_flush_cards: u8 = u8::MAX; // bitfield: [A,K,Q,J,10]
-        // zero if true
-        const SYMBOL_MASK: u16 = 0b1_1111_1111_1111;
-        let f0_ace = !((flop0 & SYMBOL_MASK) ^ CardNum::Ace as u16) & 0b1;
-        let f0_king = !((flop0 & SYMBOL_MASK) ^ CardNum::King as u16) & 0b1;
-        let f0_queen = !((flop0 & SYMBOL_MASK) ^ CardNum::Queen as u16) & 0b1;
-        let f0_jack = !((flop0 & SYMBOL_MASK) ^ CardNum::Jack as u16) & 0b1;
-        let f0_ten = !((flop0 & SYMBOL_MASK) ^ CardNum::Ten as u16) & 0b1;
+        {
+            let f0_ace = ((flop0 & NUM_MASK) ^ CardNum::Ace as u16);
+            let f0_king = ((flop0 & NUM_MASK) ^ CardNum::King as u16);
+            let f0_queen = ((flop0 & NUM_MASK) ^ CardNum::Queen as u16);
+            let f0_jack = ((flop0 & NUM_MASK) ^ CardNum::Jack as u16);
+            let f0_ten = ((flop0 & NUM_MASK) ^ CardNum::Ten as u16);
+            let f0_sym = flop0 & SYMBOL_MASK;
 
-        let f1_ace = !((flop1 & SYMBOL_MASK) ^ CardNum::Ace as u16) & 0b1;
-        let f1_king = !((flop1 & SYMBOL_MASK) ^ CardNum::King as u16) & 0b1;
-        let f1_queen = !((flop1 & SYMBOL_MASK) ^ CardNum::Queen as u16) & 0b1;
-        let f1_jack = !((flop1 & SYMBOL_MASK) ^ CardNum::Jack as u16) & 0b1;
-        let f1_ten = !((flop1 & SYMBOL_MASK) ^ CardNum::Ten as u16) & 0b1;
+            let f1_ace = ((flop1 & NUM_MASK) ^ CardNum::Ace as u16);
+            let f1_king = ((flop1 & NUM_MASK) ^ CardNum::King as u16);
+            let f1_queen = ((flop1 & NUM_MASK) ^ CardNum::Queen as u16);
+            let f1_jack = ((flop1 & NUM_MASK) ^ CardNum::Jack as u16);
+            let f1_ten = ((flop1 & NUM_MASK) ^ CardNum::Ten as u16);
+            let f1_sym = flop1 & SYMBOL_MASK;
 
-        let f2_ace = !((flop2 & SYMBOL_MASK) ^ CardNum::Ace as u16) & 0b1;
-        let f2_king = !((flop2 & SYMBOL_MASK) ^ CardNum::King as u16) & 0b1;
-        let f2_queen = !((flop2 & SYMBOL_MASK) ^ CardNum::Queen as u16) & 0b1;
-        let f2_jack = !((flop2 & SYMBOL_MASK) ^ CardNum::Jack as u16) & 0b1;
-        let f2_ten = !((flop2 & SYMBOL_MASK) ^ CardNum::Ten as u16) & 0b1;
+            let f2_ace = ((flop2 & NUM_MASK) ^ CardNum::Ace as u16);
+            let f2_king = ((flop2 & NUM_MASK) ^ CardNum::King as u16);
+            let f2_queen = ((flop2 & NUM_MASK) ^ CardNum::Queen as u16);
+            let f2_jack = ((flop2 & NUM_MASK) ^ CardNum::Jack as u16);
+            let f2_ten = ((flop2 & NUM_MASK) ^ CardNum::Ten as u16);
+            let f2_sym = flop2 & SYMBOL_MASK;
 
-        let h0_ace = !((hole0 & SYMBOL_MASK) ^ CardNum::Ace as u16) & 0b1;
-        let h0_king = !((hole0 & SYMBOL_MASK) ^ CardNum::King as u16) & 0b1;
-        let h0_queen = !((hole0 & SYMBOL_MASK) ^ CardNum::Queen as u16) & 0b1;
-        let h0_jack = !((hole0 & SYMBOL_MASK) ^ CardNum::Jack as u16) & 0b1;
-        let h0_ten = !((hole0 & SYMBOL_MASK) ^ CardNum::Ten as u16) & 0b1;
+            let h0_ace = ((hole0 & NUM_MASK) ^ CardNum::Ace as u16);
+            let h0_king = ((hole0 & NUM_MASK) ^ CardNum::King as u16);
+            let h0_queen = ((hole0 & NUM_MASK) ^ CardNum::Queen as u16);
+            let h0_jack = ((hole0 & NUM_MASK) ^ CardNum::Jack as u16);
+            let h0_ten = ((hole0 & NUM_MASK) ^ CardNum::Ten as u16);
+            let h0_sym = hole0 & SYMBOL_MASK;
 
-        let h1_ace = !((hole1 & SYMBOL_MASK) ^ CardNum::Ace as u16) & 0b1;
-        let h1_king = !((hole1 & SYMBOL_MASK) ^ CardNum::King as u16) & 0b1;
-        let h1_queen = !((hole1 & SYMBOL_MASK) ^ CardNum::Queen as u16) & 0b1;
-        let h1_jack = !((hole1 & SYMBOL_MASK) ^ CardNum::Jack as u16) & 0b1;
-        let h1_ten = !((hole1 & SYMBOL_MASK) ^ CardNum::Ten as u16) & 0b1;
+            let h1_ace = ((hole1 & NUM_MASK) ^ CardNum::Ace as u16);
+            let h1_king = ((hole1 & NUM_MASK) ^ CardNum::King as u16);
+            let h1_queen = ((hole1 & NUM_MASK) ^ CardNum::Queen as u16);
+            let h1_jack = ((hole1 & NUM_MASK) ^ CardNum::Jack as u16);
+            let h1_ten = ((hole1 & NUM_MASK) ^ CardNum::Ten as u16);
+            let h1_sym = hole1 & SYMBOL_MASK;
+
+            let has_ace = (f0_ace | f1_ace | f2_ace | h0_ace | h1_ace);
+            let has_king = (f0_king | f1_king | f2_king | h0_king | h1_king);
+            let has_queen = (f0_queen | f1_queen | f2_queen | h0_queen | h1_queen);
+            let has_jack = (f0_jack | f1_jack | f2_jack | h0_jack | h1_jack);
+            let has_ten = (f0_ten | f1_ten | f2_ten | h0_ten | h1_ten);
+            let inner_same_sym =
+                (f0_sym ^ f1_sym) | (f0_sym ^ f2_sym) | (f0_sym ^ h0_sym) | (f0_sym ^ h1_sym);
+            let same_sym = inner_same_sym.count_ones() ^ 0) & 0b1;
+        }
 
         // Straight Flush
 
