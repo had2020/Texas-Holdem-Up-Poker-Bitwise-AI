@@ -1,7 +1,7 @@
-use std::hint;
-
-use NueralBinarizedRS::*;
 use rand::{RngExt, rng};
+use std::hint;
+mod nnet;
+use nnet::*;
 
 #[repr(u16)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -199,7 +199,7 @@ fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) ->
                 return 0b111_1111_10;
             } else {
                 // Four Of a Kind
-                let mut nums_acc = [1_u8, 13];
+                let mut nums_acc = [1_u8; 16];
                 nums_acc[flop0.count_zeros() as usize] <<= 1;
                 nums_acc[flop1.count_zeros() as usize] <<= 1;
                 nums_acc[flop2.count_zeros() as usize] <<= 1;
@@ -296,10 +296,25 @@ fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) ->
 fn main() {
     let mut rng = rng();
 
-    let mut layer0 = BinarizedLayer::new(3);
-    let mut layer1 = BinarizedLayer::new(6);
-    let mut layer2 = BinarizedLayer::new(3);
-    let mut layer3 = BinarizedLayer::new(1);
+    let mut layer0 = BinarizedLayer::new(5);
+    let mut hidden0: Vec<u64> = Vec::with_capacity(5);
+    hidden0.fill(0);
+    let mut layer1 = BinarizedLayer::new(50);
+    let mut hidden1: Vec<u64> = Vec::with_capacity(50);
+    hidden1.fill(0);
+    let mut layer2 = BinarizedLayer::new(25);
+    let mut hidden2: Vec<u64> = Vec::with_capacity(25);
+    hidden2.fill(0);
+    let mut layer3 = BinarizedLayer::new(15);
+    let mut hidden3: Vec<u64> = Vec::with_capacity(15);
+    hidden3.fill(0);
+    let mut layer4 = BinarizedLayer::new(4);
+    let mut hidden4: Vec<u64> = Vec::with_capacity(4);
+    hidden4.fill(0);
+    let mut layer5 = BinarizedLayer::new(2);
+    let mut hidden5: Vec<u64> = Vec::with_capacity(2);
+    hidden5.fill(0);
+    // action and bet amount
 
     let training_epochs: usize = 2000;
     for epoch in 0..training_epochs {
@@ -327,6 +342,26 @@ fn main() {
         let mut player_pot: u16 = 0;
 
         // forced blind bets
+        let enemy_blind_bet = pre_seed & 0b0000_011;
+        //TODO handle bet
+        let inputs: Vec<u64> = vec![
+            player_pot as u64 | ((player_chips as u64) << 16), // last action after 32
+            enemy_pot as u64 | ((enemy_chips as u64) << 16),   // last action
+            flop0 as u64 | ((flop1 as u64) << 16) | ((flop2 as u64) << 32),
+            hole0 as u64 | ((hole1 as u64) << 16),
+            turn as u64 | ((river as u64) << 16),
+        ];
+        layer0.forward(&inputs, &mut hidden0);
+        layer1.forward(&hidden0, &mut hidden1);
+        layer2.forward(&hidden1, &mut hidden2);
+        layer3.forward(&hidden2, &mut hidden3);
+        layer4.forward(&hidden3, &mut hidden4);
+        layer5.forward(&hidden4, &mut hidden5);
+
+        // later stage
+
+        let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
+        let enemy_rank: u16 = hand_rank_eval(flop0, flop1, flop2, enemy_hole0, enemy_hole1);
     }
 }
 
