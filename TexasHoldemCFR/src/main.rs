@@ -1,31 +1,34 @@
-use NueralBinarizedRS::*;
-use rand::{RngExt, random_range, rng};
+use std::ops::Shr;
 
-#[repr(u8)]
-#[derive(Copy, Clone, Debug)]
+use NueralBinarizedRS::*;
+use rand::{RngExt, rng};
+
+#[repr(u16)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CardNum {
-    Two,
-    Three,
-    Four,
-    Five,
-    Six,
-    Seven,
-    Eight,
-    Nine,
-    Ten,
-    Jack,
-    Queen,
-    King,
-    Ace,
+    Hidden = 0b0_0000_0000_0000,
+    Two = 0b1_0000_0000_0000,
+    Three = 0b1_1000_0000_0000,
+    Four = 0b1_1100_0000_0000,
+    Five = 0b1_1110_0000_0000,
+    Six = 0b1_1111_0000_0000,
+    Seven = 0b1_1111_1000_0000,
+    Eight = 0b1_1111_1100_0000,
+    Nine = 0b1_1111_1110_0000,
+    Ten = 0b1_1111_1111_0000,
+    Jack = 0b1_1111_1111_1000,
+    Queen = 0b1_1111_1111_1100,
+    King = 0b1_1111_1111_1110,
+    Ace = 0b1_1111_1111_1111,
 }
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
 pub enum CardSymbol {
-    Clubs,
-    Diamonds,
-    Hearts,
-    Spades,
+    Clubs = 0b00,
+    Diamonds = 0b01,
+    Hearts = 0b10,
+    Spades = 0b11,
 }
 
 #[repr(u8)]
@@ -42,7 +45,7 @@ enum Action {
 #[derive(Copy, Clone, Debug)]
 enum RoundStage {
     // Shuffle
-    Blinds = 0b000000,
+    Blinds = 0b0000_00,
     Deal = 0b000011,
     PreFlop = 0b000111,
     Flop = 0b001111,
@@ -52,8 +55,22 @@ enum RoundStage {
 }
 
 pub const fn card_to_magnitude(card_num: CardNum, card_symbol: CardSymbol) -> u16 {
-    let rank_bits = ((1u16 << ((card_num as u8) + 1)) - 1) << 2;
-    rank_bits | (card_symbol as u16)
+    //let rank_bits = ((1u16 << ((card_num as u8) + 1)) - 1) << 2;
+    let rank_bits = card_num as u16;
+    rank_bits | ((card_symbol as u16).reverse_bits())
+    /*
+    let mut r0: u16 = 0;
+    for _ in 0..((card_num as u8) + 1) {
+        r0 = (r0 << 1) | 1;
+    }
+    r0 &= 0b1111_1111_1111_1100;
+    match card_symbol {
+        CardSymbol::Clubs => {}
+        CardSymbol::Diamonds => r0 |= 0b0000_0000_0000_0001,
+        CardSymbol::Hearts => r0 |= 0b0000_0000_0000_0010,
+        CardSymbol::Spades => r0 |= 0b0000_0000_0000_0011,
+    }
+    return r0;*/
 }
 
 const DECK: [u16; 52] = [
@@ -124,30 +141,65 @@ fn main() {
     for epoch in 0..training_epochs {
         println!("{:?}", epoch);
         let pre_seed: u16 = rng.random::<u16>();
-        let seed: usize = ((pre_seed & 0b11111).saturating_sub(12)) as usize;
+        let seed: usize = ((pre_seed & 0b1111_1).saturating_sub(12)) as usize;
 
         // other player hole cards
-        let mut enemy_hole0: u16 = DECK[seed ^ 7];
-        let mut enemy_hole1: u16 = DECK[seed ^ 32];
-        let mut enemy_chips: u16 = 0b11111111;
+        let enemy_hole0: u16 = DECK[seed ^ 7];
+        let enemy_hole1: u16 = DECK[seed ^ 32];
+        let mut enemy_chips: u16 = 0b1111_1111;
         let mut enemy_pot: u16 = 0;
 
         // game view
-        let mut flop0: u16 = DECK[seed ^ 22];
-        let mut flop1: u16 = DECK[seed ^ 27];
-        let mut flop2: u16 = DECK[seed ^ 12];
+        let flop0: u16 = DECK[seed ^ 22];
+        let flop1: u16 = DECK[seed ^ 27];
+        let flop2: u16 = DECK[seed ^ 12];
 
-        //let mut turn: u16 = DECK[seed ^ 4];
-        //let mut river: u16 = DECK[seed ^ 30];
-        let mut turn: u16 = 0;
-        let mut river: u16 = 0;
+        let turn: u16 = DECK[seed ^ 4];
+        let river: u16 = DECK[seed ^ 30];
 
-        let mut hole0: u16 = DECK[seed ^ 17];
-        let mut hole1: u16 = DECK[seed ^ 2];
-        let mut player_chips: u16 = 0b11111111;
+        let hole0: u16 = DECK[seed ^ 17];
+        let hole1: u16 = DECK[seed ^ 2];
+        let mut player_chips: u16 = 0b1111_1111;
         let mut player_pot: u16 = 0;
 
-        // TODO get player and enemy card hand ranks
+        // https://officialpokerrules.com/hand-rankings/
+        let hand_rank: u16 = 0;
+
+        // Royal Flush
+        let royal_flush_cards: u8 = u8::MAX; // bitfield: [A,K,Q,J,10]
+        // zero if true
+        const SYMBOL_MASK: u16 = 0b1_1111_1111_1111;
+        let f0_ace = !((flop0 & SYMBOL_MASK) ^ CardNum::Ace as u16) & 0b1;
+        let f0_king = !((flop0 & SYMBOL_MASK) ^ CardNum::King as u16) & 0b1;
+        let f0_queen = !((flop0 & SYMBOL_MASK) ^ CardNum::Queen as u16) & 0b1;
+        let f0_jack = !((flop0 & SYMBOL_MASK) ^ CardNum::Jack as u16) & 0b1;
+        let f0_ten = !((flop0 & SYMBOL_MASK) ^ CardNum::Ten as u16) & 0b1;
+
+        let f1_ace = !((flop1 & SYMBOL_MASK) ^ CardNum::Ace as u16) & 0b1;
+        let f1_king = !((flop1 & SYMBOL_MASK) ^ CardNum::King as u16) & 0b1;
+        let f1_queen = !((flop1 & SYMBOL_MASK) ^ CardNum::Queen as u16) & 0b1;
+        let f1_jack = !((flop1 & SYMBOL_MASK) ^ CardNum::Jack as u16) & 0b1;
+        let f1_ten = !((flop1 & SYMBOL_MASK) ^ CardNum::Ten as u16) & 0b1;
+
+        let f2_ace = !((flop2 & SYMBOL_MASK) ^ CardNum::Ace as u16) & 0b1;
+        let f2_king = !((flop2 & SYMBOL_MASK) ^ CardNum::King as u16) & 0b1;
+        let f2_queen = !((flop2 & SYMBOL_MASK) ^ CardNum::Queen as u16) & 0b1;
+        let f2_jack = !((flop2 & SYMBOL_MASK) ^ CardNum::Jack as u16) & 0b1;
+        let f2_ten = !((flop2 & SYMBOL_MASK) ^ CardNum::Ten as u16) & 0b1;
+
+        let h0_ace = !((hole0 & SYMBOL_MASK) ^ CardNum::Ace as u16) & 0b1;
+        let h0_king = !((hole0 & SYMBOL_MASK) ^ CardNum::King as u16) & 0b1;
+        let h0_queen = !((hole0 & SYMBOL_MASK) ^ CardNum::Queen as u16) & 0b1;
+        let h0_jack = !((hole0 & SYMBOL_MASK) ^ CardNum::Jack as u16) & 0b1;
+        let h0_ten = !((hole0 & SYMBOL_MASK) ^ CardNum::Ten as u16) & 0b1;
+
+        let h1_ace = !((hole1 & SYMBOL_MASK) ^ CardNum::Ace as u16) & 0b1;
+        let h1_king = !((hole1 & SYMBOL_MASK) ^ CardNum::King as u16) & 0b1;
+        let h1_queen = !((hole1 & SYMBOL_MASK) ^ CardNum::Queen as u16) & 0b1;
+        let h1_jack = !((hole1 & SYMBOL_MASK) ^ CardNum::Jack as u16) & 0b1;
+        let h1_ten = !((hole1 & SYMBOL_MASK) ^ CardNum::Ten as u16) & 0b1;
+
+        // Straight Flush
 
         // forced blind bets
     }
