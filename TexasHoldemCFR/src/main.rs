@@ -1,3 +1,5 @@
+use std::hint;
+
 use NueralBinarizedRS::*;
 use rand::{RngExt, rng};
 
@@ -126,6 +128,7 @@ const DECK: [u16; 52] = [
     card_to_magnitude(CardNum::Ace, CardSymbol::Spades),
 ];
 
+#[inline]
 fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) -> u16 {
     // https://officialpokerrules.com/hand-rankings/
 
@@ -179,7 +182,7 @@ fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) ->
 
         let royal_flush = has_ace | has_king | has_queen | has_jack | has_ten | same_sym;
         if royal_flush == 0 {
-            return 0b1111_1111_11;
+            return 0b111_1111_11;
         } else {
             //Stright Flush
 
@@ -192,8 +195,8 @@ fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) ->
             let pass: u64 =
                 (1u64 << f0_z) | (1u64 << f1_z) | (1u64 << f2_z) | (1u64 << h0_z) | (1u64 << h1_z);
 
-            if (pass >> pass.trailing_zeros()) == 0b1_1111 {
-                return 0b1111_1111_10;
+            if ((pass >> pass.trailing_zeros()) == 0b1_1111) && (same_sym == 0) {
+                return 0b111_1111_10;
             } else {
                 // Four Of a Kind
                 let mut nums_acc = [1_u8, 13];
@@ -203,9 +206,86 @@ fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) ->
                 nums_acc[hole0.count_zeros() as usize] <<= 1;
                 nums_acc[hole1.count_zeros() as usize] <<= 1;
 
-                let four_kind: u8 = 0;
+                let mut four_kind: bool = false;
                 for i in 0..13 {
-                    nums_acc[i]
+                    if nums_acc[i] > 3 {
+                        four_kind = true;
+                    }
+                }
+                if four_kind {
+                    return 0b111_1111_00;
+                } else {
+                    // Full House
+                    let mut three_kind: bool = false;
+                    let mut two_kind: bool = false;
+                    for i in 0..13 {
+                        if nums_acc[i] == 3 {
+                            three_kind = true;
+                        } else if nums_acc[i] == 2 {
+                            two_kind = true;
+                        }
+                    }
+                    if three_kind && two_kind {
+                        return 0b111_1110_00;
+                    } else {
+                        // Flush
+                        if same_sym == 0 {
+                            return 0b111_1100_00;
+                        } else {
+                            // Straight
+                            let f0_z = (flop0 & NUM_MASK).count_ones();
+                            let f1_z = (flop1 & NUM_MASK).count_ones();
+                            let f2_z = (flop2 & NUM_MASK).count_ones();
+                            let h0_z = (hole0 & NUM_MASK).count_ones();
+                            let h1_z = (hole1 & NUM_MASK).count_ones();
+
+                            let pass: u64 = (1u64 << f0_z)
+                                | (1u64 << f1_z)
+                                | (1u64 << f2_z)
+                                | (1u64 << h0_z)
+                                | (1u64 << h1_z);
+
+                            if (pass >> pass.trailing_zeros()) == 0b1_1111 {
+                                return 0b111_1000_00;
+                            } else {
+                                // Three Of a Kind
+                                let mut three_kind: bool = false;
+                                for i in 0..13 {
+                                    if nums_acc[i] > 2 {
+                                        three_kind = true;
+                                    }
+                                }
+                                if three_kind {
+                                    return 0b111_0000_00;
+                                } else {
+                                    // Two Pair
+                                    let mut two_kind = 0;
+                                    for i in 0..13 {
+                                        if nums_acc[i] > 1 {
+                                            two_kind += 1;
+                                        }
+                                    }
+                                    if two_kind == 2 {
+                                        return 0b110_0000_00;
+                                    } else {
+                                        // One Pair
+                                        let mut two_kind: bool = false;
+                                        for i in 0..13 {
+                                            if nums_acc[i] > 1 {
+                                                two_kind = true;
+                                            }
+                                        }
+                                        if two_kind {
+                                            return 0b100_0000_00;
+                                        } else {
+                                            // High Card
+                                            return 0;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
