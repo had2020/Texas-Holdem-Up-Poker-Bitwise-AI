@@ -355,11 +355,12 @@ impl NueralNet {
 }
 
 // https://www.cardplayer.com/rules-of-poker/how-to-play-poker/games/texas-holdem
-fn main() {
+#[inline(always)]
+fn select_winner(player: NueralNet, enemy: NueralNet) -> NueralNet {
     // both should come from the candinate pool
-    let mut player_net = NueralNet::new(splitmix64(&mut random()));
+    let mut player_net = player;
     let mut player_rating = 0_u32;
-    let mut enemy_net = NueralNet::new(splitmix64(&mut random()));
+    let mut enemy_net = enemy;
     let mut enemy_rating = 0_u32;
 
     let mut h0 = [0u64; 8];
@@ -367,8 +368,8 @@ fn main() {
     let mut h2 = [0u64; 4];
     let mut out = [0u64; 1];
 
-    let training_epochs: usize = u16::MAX as usize;
-    for epoch in 0..training_epochs {
+    let training_epochs: usize = 4096;
+    for _ in 0..training_epochs {
         let mut prng_state: u64 = random();
 
         let pre_seed: u64 = splitmix64(&mut prng_state);
@@ -778,7 +779,7 @@ fn main() {
                                             player_chips,
                                             player_pot,
                                         ),
-                                        3 => enemy_net.l3.mutate(
+                                        3 => player_net.l3.mutate(
                                             pre_seed ^ 60869,
                                             player_chips,
                                             player_pot,
@@ -789,6 +790,7 @@ fn main() {
                             }
                         }
 
+                        /*
                         if (epoch % 500) == 0 {
                             println!("Epoch {}", epoch);
                             // debugging bits on one neuron
@@ -802,6 +804,7 @@ fn main() {
                             println!("L2[0]: {:064b}", h2[0]);
                             println!("OUT  : {:064b}", output);
                         }
+                        */
 
                         continue;
                     }
@@ -848,20 +851,39 @@ fn main() {
                 }
             }
         }
+    }
+    if player_rating > enemy_rating {
+        return player_net;
+    } else {
+        return enemy_net;
+    }
+}
 
-        // Debug
-        if (epoch % 500) == 0 {
-            println!("Epoch {}", epoch);
-            // debugging bits on one neuron
-            println!("Actions: Player: {}, Enemy: {}", action, enemy_action);
-            println!(
-                "Ratings: Player: {}, Enemy: {}",
-                player_rating, enemy_rating
-            );
-            println!("L0[0]: {:064b}", h0[0]);
-            println!("L1[0]: {:064b}", h1[0]);
-            println!("L2[0]: {:064b}", h2[0]);
-            println!("OUT  : {:064b}", output);
-        }
+use rayon::prelude::*;
+
+fn main() {
+    let threads = rayon::current_num_threads();
+
+    let mut candinate_arena: Vec<NueralNet> = (0..(threads * 2))
+        .into_par_iter()
+        .map_init(|| random(), |seed, _| NueralNet::new(splitmix64(seed)))
+        .collect();
+
+    loop {
+        candinate_arena.par_chunks_exact_mut(2).for_each_init(
+            || random(),
+            |seed, pair| unsafe {
+                let ptr = pair.as_mut_ptr();
+                let player = std::ptr::read(ptr);
+                let enemy = std::ptr::read(ptr.add(1));
+
+                let winner = select_winner(player, enemy);
+
+                std::ptr::write(ptr, winner);
+                std::ptr::write(ptr.add(1), NueralNet::new(splitmix64(seed)));
+            },
+        );
+
+        candinate_arena.rotate_left(1);
     }
 }
