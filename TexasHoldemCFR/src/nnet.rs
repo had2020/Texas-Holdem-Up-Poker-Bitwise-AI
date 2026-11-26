@@ -1,80 +1,121 @@
-use rand::random;
-
 pub const FP_SHIFT: u32 = 16;
-// 1.0 in fixed-point representation binary 1 followed by 16 zeros
 pub const FP_ONE: i32 = 1 << FP_SHIFT;
+pub const CLAMP_MAX: i32 = FP_ONE + (FP_ONE >> 1);
+pub const CLAMP_MIN: i32 = -CLAMP_MAX;
 
-#[repr(C, align(64))]
-pub struct BinarizedLayer {
-    input_chunks: usize,
-
-    forward_weights: Vec<u64>,
-
-    shadow_weights: Vec<i32>,
-
-    thresholds: Vec<i32>,
+#[inline(always)]
+pub fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e3779b97f4a7c15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+    z ^ (z >> 31)
 }
 
-impl BinarizedLayer {
-    pub fn new(input_chunks: usize, num_neurons: usize) -> Self {
-        let total_chunks = input_chunks * num_neurons;
+//#[derive(Debug)]
+#[repr(C, align(64))]
+pub struct ForwardLayer<const IN_CHUNKS: usize, const OUT_NEURONS: usize, const OUT_CHUNKS: usize> {
+    pub weights: [[u64; IN_CHUNKS]; OUT_NEURONS],
+    pub thresholds: [u32; OUT_NEURONS],
+}
 
-        let mut forward_weights = vec![0; total_chunks];
-        let mut shadow_weights = vec![0; total_chunks * 64];
+//#[derive(Debug)]
+#[repr(C, align(64))]
+pub struct TrainState<const IN_CHUNKS: usize, const OUT_NEURONS: usize> {
+    pub shadow_weights: [[[i32; 64]; IN_CHUNKS]; OUT_NEURONS],
+    pub shadow_thresholds: [i32; OUT_NEURONS],
+}
 
-        let mut rng_seed: u64 = 0x87654321_12345678 ^ random::<u64>();
+//#[derive(Debug)]
+pub struct BinarizedLayer<const IN_CHUNKS: usize, const OUT_NEURONS: usize, const OUT_CHUNKS: usize>
+{
+    pub fwd: ForwardLayer<IN_CHUNKS, OUT_NEURONS, OUT_CHUNKS>,
+    pub train: Box<TrainState<IN_CHUNKS, OUT_NEURONS>>,
+}
 
-        for chunk_idx in 0..total_chunks {
-            rng_seed ^= rng_seed << 13;
-            rng_seed ^= rng_seed >> 7;
-            rng_seed ^= rng_seed << 17;
+impl<const IN_CHUNKS: usize, const OUT_NEURONS: usize, const OUT_CHUNKS: usize>
+    BinarizedLayer<IN_CHUNKS, OUT_NEURONS, OUT_CHUNKS>
+{
+    pub fn new(seed: &mut u64) -> Self {
+        const {
+            assert!(
+                OUT_NEURONS == OUT_CHUNKS * 64,
+                "OUT_NEURONS must equal OUT_CHUNKS * 64"
+            )
+        };
 
-            let random_mask = rng_seed;
-            forward_weights[chunk_idx] = random_mask;
+        let mut weights = [[0u64; IN_CHUNKS]; OUT_NEURONS];
+        let mut shadow_weights = vec![[[0i32; 64]; IN_CHUNKS]; OUT_NEURONS];
 
-            for bit_idx in 0..64 {
-                let bit = (random_mask >> bit_idx) & 1;
-                let shadow_idx = chunk_idx * 64 + bit_idx;
-
-                shadow_weights[shadow_idx] = if bit == 1 { FP_ONE } else { -FP_ONE };
+        for n in 0..OUT_NEURONS {
+            for c in 0..IN_CHUNKS {
+                let mask = splitmix64(seed);
+                weights[n][c] = mask;
+                for b in 0..64 {
+                    let bit = ((mask >> b) & 1) as i32;
+                    shadow_weights[n][c][b] = ((bit << 1) - 1) * FP_ONE;
+                }
             }
         }
 
+        let init_thresh_int = (IN_CHUNKS * 32) as u32;
+        let init_thresh_fp = (init_thresh_int as i32) << FP_SHIFT;
+
+        let boxed_shadows: Box<[[[i32; 64]; IN_CHUNKS]; OUT_NEURONS]> =
+            shadow_weights.into_boxed_slice().try_into().unwrap();
+
         Self {
-            input_chunks,
-            forward_weights,
-            shadow_weights,
-            thresholds: vec![((input_chunks * 64) / 2) as i32 * FP_ONE; num_neurons],
+            fwd: ForwardLayer {
+                weights,
+                thresholds: [init_thresh_int; OUT_NEURONS],
+            },
+            train: Box::new(TrainState {
+                shadow_weights: *boxed_shadows,
+                shadow_thresholds: [init_thresh_fp; OUT_NEURONS],
+            }),
         }
     }
 
-    pub fn forward(&self, inputs: &[u64], outputs: &mut [u64], num_neurons: usize) {
-        outputs.fill(0);
+    #[inline(always)]
+    pub fn forward(&self, inputs: &[u64; IN_CHUNKS], outputs: &mut [u64; OUT_CHUNKS]) {
+        for out_c in 0..OUT_CHUNKS {
+            let mut packed_out = 0u64;
+            let base_n = out_c * 64;
 
-        for neuron_idx in 0..num_neurons {
-            let mut total_set_bits = 0;
-            let weight_offset = neuron_idx * self.input_chunks;
+            for bit in 0..64 {
+                let n = base_n + bit;
+                let w = &self.fwd.weights[n];
 
-            for chunk_idx in 0..self.input_chunks {
-                let w = self.forward_weights[weight_offset + chunk_idx];
-                let x = inputs[chunk_idx];
-                total_set_bits += (!(x ^ w)).count_ones();
+                let mut acc0 = 0u32;
+                let mut acc1 = 0u32;
+                let mut acc2 = 0u32;
+                let mut acc3 = 0u32;
+
+                let mut c = 0;
+                while c + 4 <= IN_CHUNKS {
+                    acc0 += (!(inputs[c] ^ w[c])).count_ones();
+                    acc1 += (!(inputs[c + 1] ^ w[c + 1])).count_ones();
+                    acc2 += (!(inputs[c + 2] ^ w[c + 2])).count_ones();
+                    acc3 += (!(inputs[c + 3] ^ w[c + 3])).count_ones();
+                    c += 4;
+                }
+                while c < IN_CHUNKS {
+                    acc0 += (!(inputs[c] ^ w[c])).count_ones();
+                    c += 1;
+                }
+
+                let popcnt = (acc0 + acc1) + (acc2 + acc3);
+                let fired = (popcnt >= self.fwd.thresholds[n]) as u64;
+                packed_out |= fired << bit;
             }
-
-            let fp_set_bits = (total_set_bits as i32) << FP_SHIFT;
-            let fired = (fp_set_bits > self.thresholds[neuron_idx]) as u64;
-
-            let out_chunk = neuron_idx >> 6;
-            let out_bit = neuron_idx & 63;
-            outputs[out_chunk] |= fired << out_bit;
+            outputs[out_c] = packed_out;
         }
     }
 
     pub fn backward_ste(
         &mut self,
-        inputs: &[u64],
-        output_errors: &[i32],
-        num_neurons: usize,
+        inputs: &[u64; IN_CHUNKS],
+        output_errors: &[i32; OUT_NEURONS],
         mut prev_layer_errors: Option<&mut [i32]>,
         learning_rate_fp: i32,
     ) {
@@ -82,51 +123,46 @@ impl BinarizedLayer {
             errs.fill(0);
         }
 
-        for neuron_idx in 0..num_neurons {
-            let error_fp = output_errors[neuron_idx];
+        let max_thresh_fp = ((IN_CHUNKS * 64) as i32) << FP_SHIFT;
+
+        for n in 0..OUT_NEURONS {
+            let error_fp = output_errors[n];
             if error_fp == 0 {
                 continue;
             }
 
-            let weight_offset = neuron_idx * self.input_chunks;
+            let delta = ((error_fp as i64 * learning_rate_fp as i64) >> FP_SHIFT) as i32;
 
-            for chunk_idx in 0..self.input_chunks {
-                let in_chunk = inputs[chunk_idx];
-                let forward_mask = self.forward_weights[weight_offset + chunk_idx];
-                let shadow_offset = (weight_offset + chunk_idx) * 64;
+            let new_t = self.train.shadow_thresholds[n]
+                .saturating_sub(delta)
+                .clamp(0, max_thresh_fp);
+            self.train.shadow_thresholds[n] = new_t;
+            self.fwd.thresholds[n] = (new_t >> FP_SHIFT) as u32;
 
-                let mut new_bitmask: u64 = 0;
+            for c in 0..IN_CHUNKS {
+                let in_chunk = inputs[c];
+                let fwd_mask = self.fwd.weights[n][c];
+                let shadows = &mut self.train.shadow_weights[n][c];
+                let mut new_mask = 0u64;
 
-                for bit_idx in 0..64 {
+                for b in 0..64 {
                     if let Some(ref mut prev_errs) = prev_layer_errors {
-                        let weight_bit = (forward_mask >> bit_idx) & 1;
-                        let weight_dir = (weight_bit as i32 * 2) - 1;
-
-                        let propagated = error_fp.saturating_mul(weight_dir);
-                        let target_idx = chunk_idx * 64 + bit_idx;
-                        prev_errs[target_idx] = prev_errs[target_idx].saturating_add(propagated);
+                        let w_dir = (((fwd_mask >> b) & 1) as i32 * 2) - 1;
+                        let target_idx = c * 64 + b;
+                        prev_errs[target_idx] =
+                            prev_errs[target_idx].saturating_add(error_fp.saturating_mul(w_dir));
                     }
 
-                    let in_bit = (in_chunk >> bit_idx) & 1;
-                    let in_dir = (in_bit as i32 * 2) - 1;
+                    let in_dir = (((in_chunk >> b) & 1) as i32 * 2) - 1;
+                    let updated = shadows[b]
+                        .saturating_add(delta.saturating_mul(in_dir))
+                        .clamp(CLAMP_MIN, CLAMP_MAX);
+                    shadows[b] = updated;
 
-                    let delta = ((error_fp as i64 * learning_rate_fp as i64) >> FP_SHIFT) as i32;
-                    let directional_delta = delta.saturating_mul(in_dir);
-
-                    let s_idx = shadow_offset + bit_idx;
-                    let clamp_max = FP_ONE + (FP_ONE >> 1);
-                    let clamp_min = -clamp_max;
-
-                    self.shadow_weights[s_idx] = self.shadow_weights[s_idx]
-                        .saturating_add(directional_delta)
-                        .clamp(clamp_min, clamp_max);
-
-                    let bit_val = (self.shadow_weights[s_idx] >> 31) + 1;
-
-                    new_bitmask |= (bit_val as u64) << bit_idx;
+                    let bit_val = ((updated >> 31) + 1) as u64;
+                    new_mask |= bit_val << b;
                 }
-
-                self.forward_weights[weight_offset + chunk_idx] = new_bitmask;
+                self.fwd.weights[n][c] = new_mask;
             }
         }
     }

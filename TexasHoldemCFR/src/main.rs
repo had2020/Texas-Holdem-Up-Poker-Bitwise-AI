@@ -1,4 +1,4 @@
-use rand::{RngExt, rng};
+use rand::{RngExt, random, rng};
 use std::{hint, vec};
 mod nnet;
 use nnet::*;
@@ -198,7 +198,7 @@ fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) ->
                 return 0b111_1111_10;
             } else {
                 // Four Of a Kind
-                let mut nums_acc = [1_u8; 16];
+                let mut nums_acc = [1_u8; 17];
                 nums_acc[flop0.count_zeros() as usize] <<= 1;
                 nums_acc[flop1.count_zeros() as usize] <<= 1;
                 nums_acc[flop2.count_zeros() as usize] <<= 1;
@@ -291,49 +291,52 @@ fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) ->
     }
 }
 
+//#[derive(Debug)]
+pub struct KuhnTronicNet {
+    // in: [5 chunks 320 bits] -> out: [8 chunks 512 neurons]
+    pub l0: BinarizedLayer<5, 512, 8>,
+    // in: [8 chunks 512 bits] -> out: [8 chunks 512 neurons]
+    pub l1: BinarizedLayer<8, 512, 8>,
+    // in: [8 chunks 512 bits] -> out: [4 chunks 256 neurons]
+    pub l2: BinarizedLayer<8, 256, 4>,
+    // in: [4 chunks 256 bits] -> out: [1 chunk  64 neurons]
+    pub l3: BinarizedLayer<4, 64, 1>,
+}
+
+impl KuhnTronicNet {
+    pub fn new(mut seed: u64) -> Self {
+        Self {
+            l0: BinarizedLayer::new(&mut seed),
+            l1: BinarizedLayer::new(&mut seed),
+            l2: BinarizedLayer::new(&mut seed),
+            l3: BinarizedLayer::new(&mut seed),
+        }
+    }
+}
+
 // https://www.cardplayer.com/rules-of-poker/how-to-play-poker/games/texas-holdem
 fn main() {
-    let mut rng = rng();
+    let mut prng_state: u64 = random();
 
-    // 5 in -> 50 out 3200 neurons
-    let mut layer0 = BinarizedLayer::new(5, 50);
-    let mut hidden0 = vec![0u64; 50];
+    let mut net = KuhnTronicNet::new(splitmix64(&mut prng_state));
 
-    // 50 in -> 25 out 1,600 neurons
-    let mut layer1 = BinarizedLayer::new(50, 25);
-    let mut hidden1 = vec![0u64; 25];
-
-    // 25 in -> 15 out 960 neurons
-    let mut layer2 = BinarizedLayer::new(25, 15);
-    let mut hidden2 = vec![0u64; 15];
-
-    // 15 in -> 4 out 256 neurons
-    let mut layer3 = BinarizedLayer::new(15, 4);
-    let mut hidden3 = vec![0u64; 4];
-
-    // 4 in -> 2 out 128 neurons
-    let mut layer4 = BinarizedLayer::new(4, 2);
-    let mut hidden4 = vec![0u64; 2];
-
-    // 2 in -> 1 out 64 neurons
-    let mut layer5 = BinarizedLayer::new(2, 1);
-    let mut hidden5 = vec![0u64; 1];
-    // outputs are still expected to be themormeter encoded
-    // action and bet amount bits: [0-2 Action ][3-11 bet amt][31-63 attention mask]
+    let mut h0 = [0u64; 8];
+    let mut h1 = [0u64; 8];
+    let mut h2 = [0u64; 4];
+    let mut out = [0u64; 1];
 
     let training_epochs: usize = 2000;
     for epoch in 0..training_epochs {
-        println!("{:?}", epoch);
-        let pre_seed: u64 = rng.random::<u64>();
+        let pre_seed: u64 = splitmix64(&mut prng_state);
         let seed: usize = ((pre_seed & 0b1111_1).saturating_sub(12)) as usize;
 
-        // other player hole cards
+        // Other player hole cards
         let enemy_hole0: u16 = DECK[seed ^ 7];
         let enemy_hole1: u16 = DECK[seed ^ 32];
         let mut enemy_chips: u8 = 0b1111_1111;
         let mut enemy_pot: u16 = 0;
 
-        // game view
+        // Game view
         let flop0: u16 = DECK[seed ^ 22];
         let flop1: u16 = DECK[seed ^ 27];
         let flop2: u16 = DECK[seed ^ 12];
@@ -346,18 +349,18 @@ fn main() {
         let mut player_chips: u8 = 0b1111_1111;
         let mut player_pot: u16 = 0;
 
-        // forced blinds stage is not required
         // Deal Stage & Preflop
-        // TODO: enmey action and bet handling
         let enemy_action = (pre_seed & 0b0000_0111) as u8;
-        let enemy_bet_amt = (pre_seed & 0b0000_0000_1111_1111) as u8;
+        let enemy_bet_amt = (pre_seed & 0b1111_1111) as u8;
         if enemy_action == 0b0000_0111 {
-            enemy_chips >>= enemy_bet_amt.count_ones();
-            enemy_pot <<= enemy_bet_amt.count_ones();
+            let shift = enemy_bet_amt.count_ones().min(7);
+            enemy_chips >>= shift;
+            enemy_pot = (enemy_pot | 1) << shift;
         }
 
         let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
-        let inputs: Vec<u64> = vec![
+
+        let inputs: [u64; 5] = [
             player_pot as u64 | ((player_chips as u64) << 16),
             enemy_pot as u64 | ((enemy_chips as u64) << 16),
             /*
@@ -367,83 +370,221 @@ fn main() {
                 | ((RoundStage::Deal as u64) << 48),
             */
             0,
-            hole0 as u64 | ((hole1 as u64) << 16), // hand_rank
-            turn as u64 | ((river as u64) << 16),  // attention masks
+            hole0 as u64 | ((hole1 as u64) << 16), //| ((player_rank as u64) << 32),
+            //turn as u64 | ((river as u64) << 16),  // attention mask
+            0,
         ];
-        layer0.forward(&inputs, &mut hidden0, 50);
-        println!("{:b}", hidden0[0]);
-        layer1.forward(&hidden0, &mut hidden1, 25);
-        println!("{:b}", hidden1[0]);
-        layer2.forward(&hidden1, &mut hidden2, 15);
-        println!("{:b}", hidden2[0]);
-        layer3.forward(&hidden2, &mut hidden3, 4);
-        println!("{:b}", hidden3[0]);
-        layer4.forward(&hidden3, &mut hidden4, 2);
-        println!("{:b}", hidden4[0]);
-        layer5.forward(&hidden4, &mut hidden5, 1);
-        let output: u64 = hidden5[0];
-        if (output & 0b111) == 0b111 {
-            player_chips >>= output.count_ones();
-            player_pot <<= output.count_ones();
+
+        net.l0.forward(&inputs, &mut h0);
+        net.l1.forward(&h0, &mut h1);
+
+        // residual skip connection
+        for i in 0..8 {
+            h1[i] ^= h0[i];
         }
-        println!("{:b}", output);
 
-        // later stage
-    }
-}
+        net.l2.forward(&h1, &mut h2);
+        net.l3.forward(&h2, &mut out);
 
-/*
-fn main() {
-    let mut layer0 = BinarizedLayer::new(2);
-    let mut layer1 = BinarizedLayer::new(1);
+        let output: u64 = out[0];
 
-    let input0: u64 = 7;
-    let input1: u64 = 4;
-    let target0: u64 = 3;
-    let input_data = vec![input0, input1];
+        // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+        let action = output & 0b111;
+        let bet_bits = (output >> 3) & 0x1FF;
+        let attention_mask = output >> 31;
 
-    let mut hidden_activations = vec![0; 1];
-    let mut final_activations = vec![0; 1];
+        if action == 0b111 {
+            let bet_shift = bet_bits.count_ones().min(7);
+            player_chips >>= bet_shift;
+            player_pot = (player_pot | 1) << bet_shift;
+        }
 
-    let mut hidden_errors = vec![0; 64];
-    let mut final_errors = vec![0; 64];
+        if action != 0b000 {
+            // Flop
 
-    let learning_rate_fp = (0.1 * (FP_ONE as f32)) as i32;
+            let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
 
-    println!("Target: {:064b}", target0);
+            let inputs: [u64; 5] = [
+                player_pot as u64 | ((player_chips as u64) << 16),
+                enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                flop0 as u64
+                    | ((flop1 as u64) << 16)
+                    | ((flop2 as u64) << 32)
+                    | ((RoundStage::Deal as u64) << 48),
+                hole0 as u64 | ((hole1 as u64) << 16) | ((player_rank as u64) << 32),
+                0 | ((attention_mask as u64) << 32),
+            ];
 
-    for epoch in 0..=2000 {
-        layer0.forward(&input_data, &mut hidden_activations);
-        layer1.forward(&hidden_activations, &mut final_activations);
+            net.l0.forward(&inputs, &mut h0);
+            net.l1.forward(&h0, &mut h1);
 
-        let current_output = final_activations[0];
-        let error_bits = (current_output ^ target0).count_ones();
+            // residual skip connection
+            for i in 0..8 {
+                h1[i] ^= h0[i];
+            }
 
-        if epoch % 200 == 0 || error_bits == 0 {
-            println!(
-                "Epoch {:4} | Bit Errors: {:2} | Out: {:064b}",
-                epoch, error_bits, current_output
-            );
-            if error_bits == 0 {
-                break;
+            net.l2.forward(&h1, &mut h2);
+            net.l3.forward(&h2, &mut out);
+
+            let output: u64 = out[0];
+
+            // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+            let action = output & 0b111;
+            let bet_bits = (output >> 3) & 0x1FF;
+            let attention_mask = output >> 31;
+
+            if action == 0b111 {
+                let bet_shift = bet_bits.count_ones().min(7);
+                player_chips >>= bet_shift;
+                player_pot = (player_pot | 1) << bet_shift;
+            }
+
+            if action != 0b000 {
+                // Turn
+
+                let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
+
+                let inputs: [u64; 5] = [
+                    player_pot as u64 | ((player_chips as u64) << 16),
+                    enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                    flop0 as u64
+                        | ((flop1 as u64) << 16)
+                        | ((flop2 as u64) << 32)
+                        | ((RoundStage::Deal as u64) << 48),
+                    hole0 as u64 | ((hole1 as u64) << 16) | ((player_rank as u64) << 32),
+                    turn as u64 | ((attention_mask as u64) << 32),
+                ];
+
+                net.l0.forward(&inputs, &mut h0);
+                net.l1.forward(&h0, &mut h1);
+
+                // residual skip connection
+                for i in 0..8 {
+                    h1[i] ^= h0[i];
+                }
+
+                net.l2.forward(&h1, &mut h2);
+                net.l3.forward(&h2, &mut out);
+
+                let output: u64 = out[0];
+
+                // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+                let action = output & 0b111;
+                let bet_bits = (output >> 3) & 0x1FF;
+                let attention_mask = output >> 31;
+
+                if action == 0b111 {
+                    let bet_shift = bet_bits.count_ones().min(7);
+                    player_chips >>= bet_shift;
+                    player_pot = (player_pot | 1) << bet_shift;
+                }
+
+                if action != 0b000 {
+                    // River
+
+                    let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
+
+                    let inputs: [u64; 5] = [
+                        player_pot as u64 | ((player_chips as u64) << 16),
+                        enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                        flop0 as u64
+                            | ((flop1 as u64) << 16)
+                            | ((flop2 as u64) << 32)
+                            | ((RoundStage::Deal as u64) << 48),
+                        hole0 as u64 | ((hole1 as u64) << 16) | ((player_rank as u64) << 32),
+                        turn as u64 | ((river as u64) << 16) | ((attention_mask as u64) << 32),
+                    ];
+
+                    net.l0.forward(&inputs, &mut h0);
+                    net.l1.forward(&h0, &mut h1);
+
+                    // residual skip connection
+                    for i in 0..8 {
+                        h1[i] ^= h0[i];
+                    }
+
+                    net.l2.forward(&h1, &mut h2);
+                    net.l3.forward(&h2, &mut out);
+
+                    let output: u64 = out[0];
+
+                    // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+                    let action = output & 0b111;
+                    let bet_bits = (output >> 3) & 0x1FF;
+
+                    if action == 0b111 {
+                        let bet_shift = bet_bits.count_ones().min(7);
+                        player_chips >>= bet_shift;
+                        player_pot = (player_pot | 1) << bet_shift;
+                    }
+
+                    if action != 0b000 {
+                        // Showdown
+                        {
+                            let cards: [u16; 7] = [flop0, flop1, flop2, hole0, hole1, turn, river];
+                            let mut best_rank = 0;
+                            let mut best_combo = 0;
+
+                            for combo in 0..3125 {
+                                let i0 = combo % 7;
+                                let i1 = (combo / 7) % 7;
+                                let i2 = (combo / 49) % 7;
+                                let i3 = (combo / 343) % 7;
+                                let i4 = (combo / 2401) % 7;
+
+                                let unique_mask = (1u8 << i0)
+                                    | (1u8 << i1)
+                                    | (1u8 << i2)
+                                    | (1u8 << i3)
+                                    | (1u8 << i4);
+                                if unique_mask.count_ones() != 5 {
+                                    continue;
+                                }
+
+                                let rank = hand_rank_eval(
+                                    cards[i0], cards[i1], cards[i2], cards[i3], cards[i4],
+                                );
+                                if rank > best_rank {
+                                    best_rank = rank;
+                                    best_combo = combo;
+                                }
+                            }
+                            let i0 = (best_combo % 7) as u16;
+                            let i1 = ((best_combo / 7) % 7) as u16;
+                            let i2 = ((best_combo / 49) % 7) as u16;
+                            let i3 = ((best_combo / 343) % 7) as u16;
+                            let i4 = ((best_combo / 2401) % 7) as u16;
+                            hand_rank_eval(i0, i1, i2, i3, i4);
+                        }
+
+                        // TODO STE backprop and model saving
+                        if (epoch % 500) == 0 {
+                            println!("Epoch {}", epoch);
+                            /*
+                            // debugging bits on one neuron
+                            println!("L0[0]: {:064b}", h0[0]);
+                            println!("L1[0]: {:064b}", h1[0]);
+                            println!("L2[0]: {:064b}", h2[0]);
+                            println!("OUT  : {:064b}", output);
+                            */
+                        }
+
+                        continue;
+                    }
+                }
             }
         }
 
-        for i in 0..64 {
-            let target_bit = (target0 >> i) & 1;
-            let actual_bit = (current_output >> i) & 1;
-
-            final_errors[i] = (target_bit as i32 - actual_bit as i32) * FP_ONE;
+        // TODO STE backprop and model saving
+        if (epoch % 500) == 0 {
+            println!("Epoch {}", epoch);
+            /*
+            // debugging bits on one neuron
+            println!("L0[0]: {:064b}", h0[0]);
+            println!("L1[0]: {:064b}", h1[0]);
+            println!("L2[0]: {:064b}", h2[0]);
+            println!("OUT  : {:064b}", output);
+            */
         }
-
-        layer1.backward_ste(
-            &hidden_activations,
-            &final_errors,
-            Some(&mut hidden_errors),
-            learning_rate_fp,
-        );
-
-        layer0.backward_ste(&input_data, &hidden_errors, None, learning_rate_fp);
     }
 }
- */
