@@ -1,7 +1,14 @@
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Read, Result, Write};
+use std::mem::{MaybeUninit, size_of};
+use std::net::{TcpListener, TcpStream};
+use std::path::Path;
+use std::slice;
+
 pub const FP_SHIFT: u32 = 16;
 pub const FP_ONE: i32 = 1 << FP_SHIFT;
-pub const CLAMP_MAX: i32 = FP_ONE + (FP_ONE >> 1);
-pub const CLAMP_MIN: i32 = -CLAMP_MAX;
+//pub const CLAMP_MAX: i32 = FP_ONE + (FP_ONE >> 1);
+//pub const CLAMP_MIN: i32 = -CLAMP_MAX;
 
 pub fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9e3779b97f4a7c15);
@@ -20,25 +27,65 @@ fn xorshift64(state: u64) -> u64 {
     return x;
 }
 
-//#[derive(Debug)]
 #[repr(C, align(64))]
 pub struct ForwardLayer<const IN_CHUNKS: usize, const OUT_NEURONS: usize, const OUT_CHUNKS: usize> {
     pub weights: [[u64; IN_CHUNKS]; OUT_NEURONS],
     pub thresholds: [u32; OUT_NEURONS],
 }
 
-//#[derive(Debug)]
+/*
 #[repr(C, align(64))]
 pub struct TrainState<const IN_CHUNKS: usize, const OUT_NEURONS: usize> {
     pub shadow_weights: [[[i32; 64]; IN_CHUNKS]; OUT_NEURONS],
     pub shadow_thresholds: [i32; OUT_NEURONS],
-}
+}*/
 
-//#[derive(Debug)]
 pub struct BinarizedLayer<const IN_CHUNKS: usize, const OUT_NEURONS: usize, const OUT_CHUNKS: usize>
 {
     pub fwd: ForwardLayer<IN_CHUNKS, OUT_NEURONS, OUT_CHUNKS>,
-    pub train: Box<TrainState<IN_CHUNKS, OUT_NEURONS>>,
+    //pub train: Box<TrainState<IN_CHUNKS, OUT_NEURONS>>,
+}
+
+#[inline]
+unsafe fn as_bytes<T>(val: &T) -> &[u8] {
+    unsafe { slice::from_raw_parts((val as *const T) as *const u8, size_of::<T>()) }
+}
+
+#[inline]
+unsafe fn as_bytes_mut<T>(val: &mut MaybeUninit<T>) -> &mut [u8] {
+    unsafe { slice::from_raw_parts_mut(val.as_mut_ptr() as *mut u8, size_of::<T>()) }
+}
+
+pub fn save_to_file<P: AsRef<Path>, T>(path: P, data: &T) -> Result<()> {
+    let file = File::create(path)?;
+    let mut writer = BufWriter::with_capacity(64 * 1024, file);
+    writer.write_all(unsafe { as_bytes(data) })?;
+    writer.flush()
+}
+
+pub fn load_from_file<P: AsRef<Path>, T>(path: P) -> Result<Box<T>> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let mut uninit = Box::<T>::new_uninit();
+    reader.read_exact(unsafe { as_bytes_mut(&mut uninit) })?;
+    Ok(unsafe { uninit.assume_init() })
+}
+
+pub fn send_over_tcp<T>(addr: &str, data: &T) -> Result<()> {
+    let stream = TcpStream::connect(addr)?;
+    stream.set_nodelay(true)?;
+    let mut writer = BufWriter::with_capacity(64 * 1024, stream);
+    writer.write_all(unsafe { as_bytes(data) })?;
+    writer.flush()
+}
+
+pub fn recv_over_tcp<T>(bind_addr: &str) -> Result<Box<T>> {
+    let listener = TcpListener::bind(bind_addr)?;
+    let (stream, _peer) = listener.accept()?;
+    let mut reader = BufReader::with_capacity(64 * 1024, stream);
+    let mut uninit = Box::<T>::new_uninit();
+    reader.read_exact(unsafe { as_bytes_mut(&mut uninit) })?;
+    Ok(unsafe { uninit.assume_init() })
 }
 
 impl<const IN_CHUNKS: usize, const OUT_NEURONS: usize, const OUT_CHUNKS: usize>
@@ -67,20 +114,23 @@ impl<const IN_CHUNKS: usize, const OUT_NEURONS: usize, const OUT_CHUNKS: usize>
         }
 
         let init_thresh_int = (IN_CHUNKS * 32) as u32;
+        /*
         let init_thresh_fp = (init_thresh_int as i32) << FP_SHIFT;
 
         let boxed_shadows: Box<[[[i32; 64]; IN_CHUNKS]; OUT_NEURONS]> =
             shadow_weights.into_boxed_slice().try_into().unwrap();
+        */
 
         Self {
             fwd: ForwardLayer {
                 weights,
                 thresholds: [init_thresh_int; OUT_NEURONS],
             },
+            /*
             train: Box::new(TrainState {
                 shadow_weights: *boxed_shadows,
                 shadow_thresholds: [init_thresh_fp; OUT_NEURONS],
-            }),
+            }),*/
         }
     }
 

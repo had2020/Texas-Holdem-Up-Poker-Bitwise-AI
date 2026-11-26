@@ -1,6 +1,7 @@
-use std::hint;
-
 use rand::{RngExt, random, rng};
+use std::hint;
+use std::io::{Read, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 mod nnet;
 use nnet::*;
 
@@ -331,7 +332,7 @@ pub fn best_set_of_seven_cards(
     return hand_rank_eval(i0, i1, i2, i3, i4);
 }
 
-//#[derive(Debug)]
+#[repr(C)]
 pub struct NueralNet {
     // in: [5 chunks 320 bits] -> out: [8 chunks 512 neurons]
     pub l0: BinarizedLayer<5, 512, 8>,
@@ -351,6 +352,22 @@ impl NueralNet {
             l2: BinarizedLayer::new(&mut seed),
             l3: BinarizedLayer::new(&mut seed),
         }
+    }
+
+    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> std::io::Result<()> {
+        save_to_file(path, self)
+    }
+
+    pub fn load<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<Box<Self>> {
+        load_from_file(path)
+    }
+
+    pub fn send_tcp(&self, addr: &str) -> std::io::Result<()> {
+        send_over_tcp(addr, self)
+    }
+
+    pub fn recv_tcp(bind_addr: &str) -> std::io::Result<Box<Self>> {
+        recv_over_tcp(bind_addr)
     }
 }
 
@@ -869,7 +886,9 @@ fn main() {
         .map_init(|| random(), |seed, _| NueralNet::new(splitmix64(seed)))
         .collect();
 
+    let mut epoch: u64 = 0;
     loop {
+        epoch = epoch.wrapping_add(1);
         candinate_arena.par_chunks_exact_mut(2).for_each_init(
             || random(),
             |seed, pair| unsafe {
@@ -885,5 +904,11 @@ fn main() {
         );
 
         candinate_arena.rotate_left(1);
+        if (epoch % 100) == 0 {
+            for i in 0..candinate_arena.len() {
+                save_to_file(format!("winner{}.bin", i), &candinate_arena[i])
+                    .expect("Failed to write!");
+            }
+        }
     }
 }
