@@ -1,3 +1,5 @@
+use std::hint;
+
 use rand::{RngExt, random, rng};
 mod nnet;
 use nnet::*;
@@ -126,7 +128,7 @@ const DECK: [u16; 52] = [
     card_to_magnitude(CardNum::Ace, CardSymbol::Spades),
 ];
 
-#[inline]
+#[inline(always)]
 fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) -> u16 {
     // https://officialpokerrules.com/hand-rankings/
 
@@ -290,6 +292,45 @@ fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) ->
     }
 }
 
+pub fn best_set_of_seven_cards(
+    flop0: u16,
+    flop1: u16,
+    flop2: u16,
+    hole0: u16,
+    hole1: u16,
+    turn: u16,
+    river: u16,
+) -> u16 {
+    let cards: [u16; 7] = [flop0, flop1, flop2, hole0, hole1, turn, river];
+    let mut best_rank = 0;
+    let mut best_combo = 0;
+
+    for combo in 0..3125 {
+        let i0 = combo % 7;
+        let i1 = (combo / 7) % 7;
+        let i2 = (combo / 49) % 7;
+        let i3 = (combo / 343) % 7;
+        let i4 = (combo / 2401) % 7;
+
+        let unique_mask = (1u8 << i0) | (1u8 << i1) | (1u8 << i2) | (1u8 << i3) | (1u8 << i4);
+        if unique_mask.count_ones() != 5 {
+            continue;
+        }
+
+        let rank = hand_rank_eval(cards[i0], cards[i1], cards[i2], cards[i3], cards[i4]);
+        if rank > best_rank {
+            best_rank = rank;
+            best_combo = combo;
+        }
+    }
+    let i0 = (best_combo % 7) as u16;
+    let i1 = ((best_combo / 7) % 7) as u16;
+    let i2 = ((best_combo / 49) % 7) as u16;
+    let i3 = ((best_combo / 343) % 7) as u16;
+    let i4 = ((best_combo / 2401) % 7) as u16;
+    return hand_rank_eval(i0, i1, i2, i3, i4);
+}
+
 //#[derive(Debug)]
 pub struct NueralNet {
     // in: [5 chunks 320 bits] -> out: [8 chunks 512 neurons]
@@ -311,25 +352,22 @@ impl NueralNet {
             l3: BinarizedLayer::new(&mut seed),
         }
     }
-
-    pub fn mutate(&mut self, chips_won: u16, chips_saved: u8, chips_lost: u8) {
-        //TODO!
-    }
 }
 
 // https://www.cardplayer.com/rules-of-poker/how-to-play-poker/games/texas-holdem
 fn main() {
+    // both should come from the candinate pool
     let mut player_net = NueralNet::new(splitmix64(&mut random()));
+    let mut player_rating = 0_u32;
     let mut enemy_net = NueralNet::new(splitmix64(&mut random()));
-    let mut last_player_net = NueralNet::new(splitmix64(&mut random()));
-    let mut last_enemy_net = NueralNet::new(splitmix64(&mut random()));
+    let mut enemy_rating = 0_u32;
 
     let mut h0 = [0u64; 8];
     let mut h1 = [0u64; 8];
     let mut h2 = [0u64; 4];
     let mut out = [0u64; 1];
 
-    let training_epochs: usize = 2048;
+    let training_epochs: usize = u16::MAX as usize;
     for epoch in 0..training_epochs {
         let mut prng_state: u64 = random();
 
@@ -340,7 +378,7 @@ fn main() {
         let enemy_hole0: u16 = DECK[seed ^ 7];
         let enemy_hole1: u16 = DECK[seed ^ 32];
         let mut enemy_chips: u8 = 0b1111_1111;
-        let mut enemy_pot: u16 = 0;
+        let mut enemy_pot: u8 = 0;
 
         // Game view
         let flop0: u16 = DECK[seed ^ 22];
@@ -353,7 +391,7 @@ fn main() {
         let hole0: u16 = DECK[seed ^ 17];
         let hole1: u16 = DECK[seed ^ 2];
         let mut player_chips: u8 = 0b1111_1111;
-        let mut player_pot: u16 = 0;
+        let mut player_pot: u8 = 0;
 
         // Deal Stage & Preflop
 
@@ -393,14 +431,8 @@ fn main() {
 
         if enemy_action == 0b111 {
             let bet_shift = enemy_bet_bits.count_ones().min(7);
-            player_chips >>= bet_shift;
-            player_pot = (player_pot | 1) << bet_shift;
-        }
-
-        if enemy_action == 0b0000_0111 {
-            let shift = enemy_bet_bits.count_ones().min(7);
-            enemy_chips >>= shift;
-            enemy_pot = (enemy_pot | 1) << shift;
+            enemy_chips >>= bet_shift;
+            enemy_pot = (enemy_pot | 1) << bet_shift;
         }
 
         // Player
@@ -446,6 +478,43 @@ fn main() {
         if action != 0b000 {
             // Flop
 
+            let enemy_rank: u16 = hand_rank_eval(flop0, flop1, flop2, enemy_hole0, enemy_hole1);
+
+            let inputs: [u64; 5] = [
+                enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                player_pot as u64 | ((player_chips as u64) << 16),
+                flop0 as u64
+                    | ((flop1 as u64) << 16)
+                    | ((flop2 as u64) << 32)
+                    | ((RoundStage::Deal as u64) << 48),
+                enemy_hole0 as u64 | ((enemy_hole1 as u64) << 16) | ((enemy_rank as u64) << 32),
+                0 | ((attention_mask as u64) << 32),
+            ];
+
+            enemy_net.l0.forward(&inputs, &mut h0);
+            enemy_net.l1.forward(&h0, &mut h1);
+
+            // residual skip connection
+            for i in 0..8 {
+                h1[i] ^= h0[i];
+            }
+
+            enemy_net.l2.forward(&h1, &mut h2);
+            enemy_net.l3.forward(&h2, &mut out);
+
+            let enmey_output: u64 = out[0];
+
+            // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+            let enemy_action = enmey_output & 0b111;
+            let enemy_bet_bits = (enmey_output >> 3) & 0x1FF;
+            let enemy_attention_mask = enmey_output >> 31;
+
+            if enemy_action == 0b111 {
+                let bet_shift = enemy_bet_bits.count_ones().min(7);
+                enemy_chips >>= bet_shift;
+                enemy_pot = (enemy_pot | 1) << bet_shift;
+            }
+
             let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
 
             let inputs: [u64; 5] = [
@@ -485,6 +554,43 @@ fn main() {
 
             if action != 0b000 {
                 // Turn
+
+                let enemy_rank: u16 = hand_rank_eval(flop0, flop1, flop2, enemy_hole0, enemy_hole1);
+
+                let inputs: [u64; 5] = [
+                    enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                    player_pot as u64 | ((player_chips as u64) << 16),
+                    flop0 as u64
+                        | ((flop1 as u64) << 16)
+                        | ((flop2 as u64) << 32)
+                        | ((RoundStage::Deal as u64) << 48),
+                    enemy_hole0 as u64 | ((enemy_hole1 as u64) << 16) | ((enemy_rank as u64) << 32),
+                    turn as u64 | ((attention_mask as u64) << 32),
+                ];
+
+                enemy_net.l0.forward(&inputs, &mut h0);
+                enemy_net.l1.forward(&h0, &mut h1);
+
+                // residual skip connection
+                for i in 0..8 {
+                    h1[i] ^= h0[i];
+                }
+
+                enemy_net.l2.forward(&h1, &mut h2);
+                enemy_net.l3.forward(&h2, &mut out);
+
+                let enmey_output: u64 = out[0];
+
+                // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+                let enemy_action = enmey_output & 0b111;
+                let enemy_bet_bits = (enmey_output >> 3) & 0x1FF;
+                let enemy_attention_mask = enmey_output >> 31;
+
+                if enemy_action == 0b111 {
+                    let bet_shift = enemy_bet_bits.count_ones().min(7);
+                    enemy_chips >>= bet_shift;
+                    enemy_pot = (enemy_pot | 1) << bet_shift;
+                }
 
                 let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
 
@@ -526,6 +632,46 @@ fn main() {
                 if action != 0b000 {
                     // River
 
+                    let enemy_rank: u16 =
+                        hand_rank_eval(flop0, flop1, flop2, enemy_hole0, enemy_hole1);
+
+                    let inputs: [u64; 5] = [
+                        enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                        player_pot as u64 | ((player_chips as u64) << 16),
+                        flop0 as u64
+                            | ((flop1 as u64) << 16)
+                            | ((flop2 as u64) << 32)
+                            | ((RoundStage::Deal as u64) << 48),
+                        enemy_hole0 as u64
+                            | ((enemy_hole1 as u64) << 16)
+                            | ((enemy_rank as u64) << 32),
+                        turn as u64 | ((river as u64) << 16) | ((attention_mask as u64) << 32),
+                    ];
+
+                    enemy_net.l0.forward(&inputs, &mut h0);
+                    enemy_net.l1.forward(&h0, &mut h1);
+
+                    // residual skip connection
+                    for i in 0..8 {
+                        h1[i] ^= h0[i];
+                    }
+
+                    enemy_net.l2.forward(&h1, &mut h2);
+                    enemy_net.l3.forward(&h2, &mut out);
+
+                    let enmey_output: u64 = out[0];
+
+                    // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+                    let enemy_action = enmey_output & 0b111;
+                    let enemy_bet_bits = (enmey_output >> 3) & 0x1FF;
+                    let enemy_attention_mask = enmey_output >> 31;
+
+                    if enemy_action == 0b111 {
+                        let bet_shift = enemy_bet_bits.count_ones().min(7);
+                        enemy_chips >>= bet_shift;
+                        enemy_pot = (enemy_pot | 1) << bet_shift;
+                    }
+
                     let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
 
                     let inputs: [u64; 5] = [
@@ -565,43 +711,97 @@ fn main() {
                     if action != 0b000 {
                         // Showdown
                         {
-                            let cards: [u16; 7] = [flop0, flop1, flop2, hole0, hole1, turn, river];
-                            let mut best_rank = 0;
-                            let mut best_combo = 0;
-
-                            for combo in 0..3125 {
-                                let i0 = combo % 7;
-                                let i1 = (combo / 7) % 7;
-                                let i2 = (combo / 49) % 7;
-                                let i3 = (combo / 343) % 7;
-                                let i4 = (combo / 2401) % 7;
-
-                                let unique_mask = (1u8 << i0)
-                                    | (1u8 << i1)
-                                    | (1u8 << i2)
-                                    | (1u8 << i3)
-                                    | (1u8 << i4);
-                                if unique_mask.count_ones() != 5 {
-                                    continue;
+                            let enmey_total = best_set_of_seven_cards(
+                                flop0,
+                                flop1,
+                                flop2,
+                                enemy_hole0,
+                                enemy_hole1,
+                                turn,
+                                river,
+                            );
+                            let player_total = best_set_of_seven_cards(
+                                flop0, flop1, flop2, hole0, hole1, turn, river,
+                            );
+                            if player_total > enmey_total {
+                                player_rating += ((player_chips as u64)
+                                    | ((player_pot as u64) >> 16)
+                                    | (enemy_pot as u64) >> 32)
+                                    .count_ones();
+                                enemy_rating = enemy_rating.saturating_sub(enemy_pot.count_ones());
+                                unsafe {
+                                    match (prng_state ^ 67) & 0b11 {
+                                        0 => enemy_net.l0.mutate(
+                                            pre_seed ^ 7919,
+                                            enemy_chips,
+                                            enemy_pot,
+                                        ),
+                                        1 => enemy_net.l1.mutate(
+                                            pre_seed ^ 6121,
+                                            enemy_chips,
+                                            enemy_pot,
+                                        ),
+                                        2 => enemy_net.l2.mutate(
+                                            pre_seed ^ 1223,
+                                            enemy_chips,
+                                            enemy_pot,
+                                        ),
+                                        3 => enemy_net.l3.mutate(
+                                            pre_seed ^ 60869,
+                                            enemy_chips,
+                                            enemy_pot,
+                                        ),
+                                        _ => hint::unreachable_unchecked(),
+                                    }
                                 }
-
-                                let rank = hand_rank_eval(
-                                    cards[i0], cards[i1], cards[i2], cards[i3], cards[i4],
-                                );
-                                if rank > best_rank {
-                                    best_rank = rank;
-                                    best_combo = combo;
+                            } else if enmey_total > player_total {
+                                enemy_rating += ((enemy_chips as u64)
+                                    | ((enemy_pot as u64) >> 16)
+                                    | (player_pot as u64) >> 32)
+                                    .count_ones();
+                                player_rating =
+                                    player_rating.saturating_sub(player_pot.count_ones());
+                                unsafe {
+                                    match (prng_state ^ 67) & 0b11 {
+                                        0 => player_net.l0.mutate(
+                                            pre_seed ^ 7919,
+                                            player_chips,
+                                            player_pot,
+                                        ),
+                                        1 => player_net.l1.mutate(
+                                            pre_seed ^ 6121,
+                                            player_chips,
+                                            player_pot,
+                                        ),
+                                        2 => player_net.l2.mutate(
+                                            pre_seed ^ 1223,
+                                            player_chips,
+                                            player_pot,
+                                        ),
+                                        3 => enemy_net.l3.mutate(
+                                            pre_seed ^ 60869,
+                                            player_chips,
+                                            player_pot,
+                                        ),
+                                        _ => hint::unreachable_unchecked(),
+                                    }
                                 }
                             }
-                            let i0 = (best_combo % 7) as u16;
-                            let i1 = ((best_combo / 7) % 7) as u16;
-                            let i2 = ((best_combo / 49) % 7) as u16;
-                            let i3 = ((best_combo / 343) % 7) as u16;
-                            let i4 = ((best_combo / 2401) % 7) as u16;
-                            hand_rank_eval(i0, i1, i2, i3, i4);
                         }
 
-                        // TODO! compute winner
+                        if (epoch % 500) == 0 {
+                            println!("Epoch {}", epoch);
+                            // debugging bits on one neuron
+                            println!("Actions: Player: {}, Enemy: {}", action, enemy_action);
+                            println!(
+                                "Ratings: Player: {}, Enemy: {}",
+                                player_rating, enemy_rating
+                            );
+                            println!("L0[0]: {:064b}", h0[0]);
+                            println!("L1[0]: {:064b}", h1[0]);
+                            println!("L2[0]: {:064b}", h2[0]);
+                            println!("OUT  : {:064b}", output);
+                        }
 
                         continue;
                     }
@@ -609,18 +809,59 @@ fn main() {
             }
         }
 
-        // TODO! handle fold
+        if enemy_action == 0b000 {
+            player_rating +=
+                ((player_chips as u64) | ((player_pot as u64) >> 16) | (enemy_pot as u64) >> 32)
+                    .count_ones();
+            enemy_rating = enemy_rating.saturating_sub(enemy_pot.count_ones());
+            unsafe {
+                match (prng_state ^ 67) & 0b11 {
+                    0 => enemy_net.l0.mutate(pre_seed ^ 7919, enemy_chips, enemy_pot),
+                    1 => enemy_net.l1.mutate(pre_seed ^ 6121, enemy_chips, enemy_pot),
+                    2 => enemy_net.l2.mutate(pre_seed ^ 1223, enemy_chips, enemy_pot),
+                    3 => enemy_net
+                        .l3
+                        .mutate(pre_seed ^ 60869, enemy_chips, enemy_pot),
+                    _ => hint::unreachable_unchecked(),
+                }
+            }
+        } else {
+            enemy_rating +=
+                ((enemy_chips as u64) | ((enemy_pot as u64) >> 16) | (player_pot as u64) >> 32)
+                    .count_ones();
+            player_rating = player_rating.saturating_sub(player_pot.count_ones());
+            unsafe {
+                match (prng_state ^ 67) & 0b11 {
+                    0 => player_net
+                        .l0
+                        .mutate(pre_seed ^ 7919, player_chips, player_pot),
+                    1 => player_net
+                        .l1
+                        .mutate(pre_seed ^ 6121, player_chips, player_pot),
+                    2 => player_net
+                        .l2
+                        .mutate(pre_seed ^ 1223, player_chips, player_pot),
+                    3 => enemy_net
+                        .l3
+                        .mutate(pre_seed ^ 60869, player_chips, player_pot),
+                    _ => hint::unreachable_unchecked(),
+                }
+            }
+        }
 
         // Debug
         if (epoch % 500) == 0 {
             println!("Epoch {}", epoch);
-            /*
             // debugging bits on one neuron
+            println!("Actions: Player: {}, Enemy: {}", action, enemy_action);
+            println!(
+                "Ratings: Player: {}, Enemy: {}",
+                player_rating, enemy_rating
+            );
             println!("L0[0]: {:064b}", h0[0]);
             println!("L1[0]: {:064b}", h1[0]);
             println!("L2[0]: {:064b}", h2[0]);
             println!("OUT  : {:064b}", output);
-            */
         }
     }
 }

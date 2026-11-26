@@ -3,13 +3,21 @@ pub const FP_ONE: i32 = 1 << FP_SHIFT;
 pub const CLAMP_MAX: i32 = FP_ONE + (FP_ONE >> 1);
 pub const CLAMP_MIN: i32 = -CLAMP_MAX;
 
-#[inline(always)]
 pub fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9e3779b97f4a7c15);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
     z ^ (z >> 31)
+}
+
+#[inline(always)]
+fn xorshift64(state: u64) -> u64 {
+    let mut x = state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    return x;
 }
 
 //#[derive(Debug)]
@@ -167,4 +175,71 @@ impl<const IN_CHUNKS: usize, const OUT_NEURONS: usize, const OUT_CHUNKS: usize>
             }
         }
     }*/
+
+    #[inline(always)]
+    pub fn mutate(&mut self, prng: u64, chips_saved: u8, chips_lost: u8) {
+        let mutation_rate = chips_saved.saturating_sub(chips_lost);
+        if mutation_rate == 0 {
+            return;
+        }
+
+        let and_passes = (mutation_rate.leading_zeros() + 2).min(10);
+
+        let mut seed = prng | 1;
+        let mut s0 = splitmix64(&mut seed) | 1;
+        let mut s1 = splitmix64(&mut seed) | 1;
+        let mut s2 = splitmix64(&mut seed) | 1;
+        let mut s3 = splitmix64(&mut seed) | 1;
+
+        let max_thresh = (IN_CHUNKS * 64) as i32;
+        let thresh_prob_mask = (1u64 << and_passes) - 1;
+
+        for n in 0..OUT_NEURONS {
+            let w = &mut self.fwd.weights[n];
+            let mut c = 0;
+
+            while c + 4 <= IN_CHUNKS {
+                let mut m0 = !0u64;
+                let mut m1 = !0u64;
+                let mut m2 = !0u64;
+                let mut m3 = !0u64;
+
+                for _ in 0..and_passes {
+                    s0 = xorshift64(s0);
+                    s1 = xorshift64(s1);
+                    s2 = xorshift64(s2);
+                    s3 = xorshift64(s3);
+                    m0 &= s0;
+                    m1 &= s1;
+                    m2 &= s2;
+                    m3 &= s3;
+                }
+
+                w[c] ^= m0;
+                w[c + 1] ^= m1;
+                w[c + 2] ^= m2;
+                w[c + 3] ^= m3;
+                c += 4;
+            }
+
+            // Remainder chunks
+            while c < IN_CHUNKS {
+                let mut m0 = !0u64;
+                for _ in 0..and_passes {
+                    s0 = xorshift64(s0);
+                    m0 &= s0;
+                }
+                w[c] ^= m0;
+                c += 1;
+            }
+
+            s0 = xorshift64(s0);
+            let do_mut = ((s0 & thresh_prob_mask) == 0) as i32;
+            let dir = (((s0 >> 63) as i32) << 1) - 1;
+            let delta = dir * do_mut;
+
+            let new_t = (self.fwd.thresholds[n] as i32 + delta).clamp(0, max_thresh);
+            self.fwd.thresholds[n] = new_t as u32;
+        }
+    }
 }
