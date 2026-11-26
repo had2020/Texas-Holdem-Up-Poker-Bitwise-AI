@@ -1,5 +1,5 @@
 use rand::{RngExt, rng};
-use std::hint;
+use std::{hint, vec};
 mod nnet;
 use nnet::*;
 
@@ -34,10 +34,10 @@ pub enum CardSymbol {
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
 enum Action {
-    Fold = 0b00,
-    Check = 0b01,
-    Call = 0b10,
-    Bet = 0b11,
+    Fold = 0b000,
+    Check = 0b100,
+    Call = 0b110,
+    Bet = 0b111,
 }
 
 //https://www.youtube.com/watch?v=ep1riICX-KU
@@ -45,12 +45,12 @@ enum Action {
 #[derive(Copy, Clone, Debug)]
 enum RoundStage {
     // Shuffle
-    Blinds = 0b0000_00,
-    Deal = 0b000011,
-    PreFlop = 0b000111,
-    Flop = 0b001111,
-    Turn = 0b011111,
-    River = 0b111111,
+    Blinds = 0b0000_0,
+    Deal = 0b0000_1,
+    PreFlop = 0b0001_1,
+    Flop = 0b0011_1,
+    Turn = 0b0111_1,
+    River = 0b1111_1,
     //Showdown/Winner selected
 }
 
@@ -296,25 +296,30 @@ fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) ->
 fn main() {
     let mut rng = rng();
 
-    let mut layer0 = BinarizedLayer::new(5);
-    let mut hidden0: Vec<u64> = Vec::with_capacity(5);
-    hidden0.fill(0);
-    let mut layer1 = BinarizedLayer::new(50);
-    let mut hidden1: Vec<u64> = Vec::with_capacity(50);
-    hidden1.fill(0);
-    let mut layer2 = BinarizedLayer::new(25);
-    let mut hidden2: Vec<u64> = Vec::with_capacity(25);
-    hidden2.fill(0);
-    let mut layer3 = BinarizedLayer::new(15);
-    let mut hidden3: Vec<u64> = Vec::with_capacity(15);
-    hidden3.fill(0);
-    let mut layer4 = BinarizedLayer::new(4);
-    let mut hidden4: Vec<u64> = Vec::with_capacity(4);
-    hidden4.fill(0);
-    let mut layer5 = BinarizedLayer::new(2);
-    let mut hidden5: Vec<u64> = Vec::with_capacity(2);
-    hidden5.fill(0);
-    // action and bet amount
+    // 5 in -> 50 out 3200 neurons
+    let mut layer0 = BinarizedLayer::new(5, 50);
+    let mut hidden0 = vec![0u64; 50];
+
+    // 50 in -> 25 out 1,600 neurons
+    let mut layer1 = BinarizedLayer::new(50, 25);
+    let mut hidden1 = vec![0u64; 25];
+
+    // 25 in -> 15 out 960 neurons
+    let mut layer2 = BinarizedLayer::new(25, 15);
+    let mut hidden2 = vec![0u64; 15];
+
+    // 15 in -> 4 out 256 neurons
+    let mut layer3 = BinarizedLayer::new(15, 4);
+    let mut hidden3 = vec![0u64; 4];
+
+    // 4 in -> 2 out 128 neurons
+    let mut layer4 = BinarizedLayer::new(4, 2);
+    let mut hidden4 = vec![0u64; 2];
+
+    // 2 in -> 1 out 64 neurons
+    let mut layer5 = BinarizedLayer::new(2, 1);
+    let mut hidden5 = vec![0u64; 1]; // outputs are still expected to be themormeter encoded
+    // action and bet amount bits: [0-2 Action ][3-11 bet amt][31-63 attention mask]
 
     let training_epochs: usize = 2000;
     for epoch in 0..training_epochs {
@@ -326,7 +331,7 @@ fn main() {
         let enemy_hole0: u16 = DECK[seed ^ 7];
         let enemy_hole1: u16 = DECK[seed ^ 32];
         let mut enemy_chips: u8 = 0b1111_1111;
-        let mut enemy_pot: u16 = 0;
+        let mut enemy_pot: u16 = 1;
 
         // game view
         let flop0: u16 = DECK[seed ^ 22];
@@ -339,29 +344,30 @@ fn main() {
         let hole0: u16 = DECK[seed ^ 17];
         let hole1: u16 = DECK[seed ^ 2];
         let mut player_chips: u8 = 0b1111_1111;
-        let mut player_pot: u16 = 0;
+        let mut player_pot: u16 = 1;
 
-        // forced blind bets
-        let enemy_blind_bet = pre_seed & 0b0000_011;
-        //TODO handle bet
+        // forced blinds are not required
+        // Deal Stage
+        let // TODO: enmey action and bet handling
+        let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
         let inputs: Vec<u64> = vec![
-            player_pot as u64 | ((player_chips as u64) << 16), // last action after 32
-            enemy_pot as u64 | ((enemy_chips as u64) << 16),   // last action
-            flop0 as u64 | ((flop1 as u64) << 16) | ((flop2 as u64) << 32),
-            hole0 as u64 | ((hole1 as u64) << 16),
-            turn as u64 | ((river as u64) << 16),
+            player_pot as u64 | ((player_chips as u64) << 16), // history of actions
+            enemy_pot as u64 | ((enemy_chips as u64) << 16),   // history of actions
+            flop0 as u64 | ((flop1 as u64) << 16) | ((flop2 as u64) << 32), // RoundStage
+            hole0 as u64 | ((hole1 as u64) << 16),             // hand_rank
+            turn as u64 | ((river as u64) << 16),              // attention masks
         ];
-        layer0.forward(&inputs, &mut hidden0);
-        layer1.forward(&hidden0, &mut hidden1);
-        layer2.forward(&hidden1, &mut hidden2);
-        layer3.forward(&hidden2, &mut hidden3);
-        layer4.forward(&hidden3, &mut hidden4);
-        layer5.forward(&hidden4, &mut hidden5);
+        layer0.forward(&inputs, &mut hidden0, 50);
+        layer1.forward(&hidden0, &mut hidden1, 25);
+        layer2.forward(&hidden1, &mut hidden2, 15);
+        layer3.forward(&hidden2, &mut hidden3, 4);
+        layer4.forward(&hidden3, &mut hidden4, 2);
+        layer5.forward(&hidden4, &mut hidden5, 1);
+        let output = hidden5[0];
+        player_pot = (output & 0b0001_1111_111) as u16;
+        player_chips >>= player_pot.count_ones();
 
         // later stage
-
-        let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
-        let enemy_rank: u16 = hand_rank_eval(flop0, flop1, flop2, enemy_hole0, enemy_hole1);
     }
 }
 

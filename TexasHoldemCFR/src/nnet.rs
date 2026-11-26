@@ -16,8 +16,7 @@ pub struct BinarizedLayer {
 }
 
 impl BinarizedLayer {
-    pub fn new(input_chunks: usize) -> Self {
-        let num_neurons: usize = 64;
+    pub fn new(input_chunks: usize, num_neurons: usize) -> Self {
         let total_chunks = input_chunks * num_neurons;
 
         let mut forward_weights = vec![0; total_chunks];
@@ -49,8 +48,7 @@ impl BinarizedLayer {
         }
     }
 
-    pub fn forward(&self, inputs: &[u64], outputs: &mut [u64]) {
-        let num_neurons: usize = 64;
+    pub fn forward(&self, inputs: &[u64], outputs: &mut [u64], num_neurons: usize) {
         outputs.fill(0);
 
         for neuron_idx in 0..num_neurons {
@@ -76,10 +74,10 @@ impl BinarizedLayer {
         &mut self,
         inputs: &[u64],
         output_errors: &[i32],
+        num_neurons: usize,
         mut prev_layer_errors: Option<&mut [i32]>,
         learning_rate_fp: i32,
     ) {
-        let num_neurons: usize = 64;
         if let Some(ref mut errs) = prev_layer_errors {
             errs.fill(0);
         }
