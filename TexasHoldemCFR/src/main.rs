@@ -45,12 +45,11 @@ enum Action {
 #[derive(Copy, Clone, Debug)]
 enum RoundStage {
     // Shuffle
-    Blinds = 0b0000_0,
-    Deal = 0b0000_1,
-    PreFlop = 0b0001_1,
-    Flop = 0b0011_1,
-    Turn = 0b0111_1,
-    River = 0b1111_1,
+    Blinds = 0b0000,
+    Deal = 0b0001,
+    Flop = 0b0011,
+    Turn = 0b0111,
+    River = 0b1111,
     //Showdown/Winner selected
 }
 
@@ -318,20 +317,21 @@ fn main() {
 
     // 2 in -> 1 out 64 neurons
     let mut layer5 = BinarizedLayer::new(2, 1);
-    let mut hidden5 = vec![0u64; 1]; // outputs are still expected to be themormeter encoded
+    let mut hidden5 = vec![0u64; 1];
+    // outputs are still expected to be themormeter encoded
     // action and bet amount bits: [0-2 Action ][3-11 bet amt][31-63 attention mask]
 
     let training_epochs: usize = 2000;
     for epoch in 0..training_epochs {
         println!("{:?}", epoch);
-        let pre_seed: u16 = rng.random::<u16>();
+        let pre_seed: u64 = rng.random::<u64>();
         let seed: usize = ((pre_seed & 0b1111_1).saturating_sub(12)) as usize;
 
         // other player hole cards
         let enemy_hole0: u16 = DECK[seed ^ 7];
         let enemy_hole1: u16 = DECK[seed ^ 32];
         let mut enemy_chips: u8 = 0b1111_1111;
-        let mut enemy_pot: u16 = 1;
+        let mut enemy_pot: u16 = 0;
 
         // game view
         let flop0: u16 = DECK[seed ^ 22];
@@ -344,28 +344,49 @@ fn main() {
         let hole0: u16 = DECK[seed ^ 17];
         let hole1: u16 = DECK[seed ^ 2];
         let mut player_chips: u8 = 0b1111_1111;
-        let mut player_pot: u16 = 1;
+        let mut player_pot: u16 = 0;
 
-        // forced blinds are not required
-        // Deal Stage
-        let // TODO: enmey action and bet handling
+        // forced blinds stage is not required
+        // Deal Stage & Preflop
+        // TODO: enmey action and bet handling
+        let enemy_action = (pre_seed & 0b0000_0111) as u8;
+        let enemy_bet_amt = (pre_seed & 0b0000_0000_1111_1111) as u8;
+        if enemy_action == 0b0000_0111 {
+            enemy_chips >>= enemy_bet_amt.count_ones();
+            enemy_pot <<= enemy_bet_amt.count_ones();
+        }
+
         let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
         let inputs: Vec<u64> = vec![
-            player_pot as u64 | ((player_chips as u64) << 16), // history of actions
-            enemy_pot as u64 | ((enemy_chips as u64) << 16),   // history of actions
-            flop0 as u64 | ((flop1 as u64) << 16) | ((flop2 as u64) << 32), // RoundStage
-            hole0 as u64 | ((hole1 as u64) << 16),             // hand_rank
-            turn as u64 | ((river as u64) << 16),              // attention masks
+            player_pot as u64 | ((player_chips as u64) << 16),
+            enemy_pot as u64 | ((enemy_chips as u64) << 16),
+            /*
+            flop0 as u64
+                | ((flop1 as u64) << 16)
+                | ((flop2 as u64) << 32)
+                | ((RoundStage::Deal as u64) << 48),
+            */
+            0,
+            hole0 as u64 | ((hole1 as u64) << 16), // hand_rank
+            turn as u64 | ((river as u64) << 16),  // attention masks
         ];
         layer0.forward(&inputs, &mut hidden0, 50);
+        println!("{:b}", hidden0[0]);
         layer1.forward(&hidden0, &mut hidden1, 25);
+        println!("{:b}", hidden1[0]);
         layer2.forward(&hidden1, &mut hidden2, 15);
+        println!("{:b}", hidden2[0]);
         layer3.forward(&hidden2, &mut hidden3, 4);
+        println!("{:b}", hidden3[0]);
         layer4.forward(&hidden3, &mut hidden4, 2);
+        println!("{:b}", hidden4[0]);
         layer5.forward(&hidden4, &mut hidden5, 1);
-        let output = hidden5[0];
-        player_pot = (output & 0b0001_1111_111) as u16;
-        player_chips >>= player_pot.count_ones();
+        let output: u64 = hidden5[0];
+        if (output & 0b111) == 0b111 {
+            player_chips >>= output.count_ones();
+            player_pot <<= output.count_ones();
+        }
+        println!("{:b}", output);
 
         // later stage
     }
