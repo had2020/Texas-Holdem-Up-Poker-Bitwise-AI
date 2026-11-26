@@ -112,6 +112,7 @@ impl<const IN_CHUNKS: usize, const OUT_NEURONS: usize, const OUT_CHUNKS: usize>
         }
     }
 
+    /* This code still works I just decided not to go with CFR
     pub fn backward_ste(
         &mut self,
         inputs: &[u64; IN_CHUNKS],
@@ -165,5 +166,5 @@ impl<const IN_CHUNKS: usize, const OUT_NEURONS: usize, const OUT_CHUNKS: usize>
                 self.fwd.weights[n][c] = new_mask;
             }
         }
-    }
+    }*/
 }

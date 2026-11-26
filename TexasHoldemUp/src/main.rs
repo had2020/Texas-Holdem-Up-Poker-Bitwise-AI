@@ -291,7 +291,7 @@ fn hand_rank_eval(flop0: u16, flop1: u16, flop2: u16, hole0: u16, hole1: u16) ->
 }
 
 //#[derive(Debug)]
-pub struct KuhnTronicNet {
+pub struct NueralNet {
     // in: [5 chunks 320 bits] -> out: [8 chunks 512 neurons]
     pub l0: BinarizedLayer<5, 512, 8>,
     // in: [8 chunks 512 bits] -> out: [8 chunks 512 neurons]
@@ -302,7 +302,7 @@ pub struct KuhnTronicNet {
     pub l3: BinarizedLayer<4, 64, 1>,
 }
 
-impl KuhnTronicNet {
+impl NueralNet {
     pub fn new(mut seed: u64) -> Self {
         Self {
             l0: BinarizedLayer::new(&mut seed),
@@ -311,21 +311,28 @@ impl KuhnTronicNet {
             l3: BinarizedLayer::new(&mut seed),
         }
     }
+
+    pub fn mutate(&mut self, chips_won: u16, chips_saved: u8, chips_lost: u8) {
+        //TODO!
+    }
 }
 
 // https://www.cardplayer.com/rules-of-poker/how-to-play-poker/games/texas-holdem
 fn main() {
-    let mut prng_state: u64 = random();
-
-    let mut net = KuhnTronicNet::new(splitmix64(&mut prng_state));
+    let mut player_net = NueralNet::new(splitmix64(&mut random()));
+    let mut enemy_net = NueralNet::new(splitmix64(&mut random()));
+    let mut last_player_net = NueralNet::new(splitmix64(&mut random()));
+    let mut last_enemy_net = NueralNet::new(splitmix64(&mut random()));
 
     let mut h0 = [0u64; 8];
     let mut h1 = [0u64; 8];
     let mut h2 = [0u64; 4];
     let mut out = [0u64; 1];
 
-    let training_epochs: usize = 2000;
+    let training_epochs: usize = 2048;
     for epoch in 0..training_epochs {
+        let mut prng_state: u64 = random();
+
         let pre_seed: u64 = splitmix64(&mut prng_state);
         let seed: usize = ((pre_seed & 0b1111_1).saturating_sub(12)) as usize;
 
@@ -349,16 +356,54 @@ fn main() {
         let mut player_pot: u16 = 0;
 
         // Deal Stage & Preflop
-        let enemy_action = (pre_seed & 0b0000_0111) as u8;
-        let enemy_bet_amt = (pre_seed & 0b1111_1111) as u8;
+
+        // enemy
+        let inputs: [u64; 5] = [
+            enemy_pot as u64 | ((enemy_chips as u64) << 16),
+            player_pot as u64 | ((player_chips as u64) << 16),
+            /*
+            flop0 as u64
+                | ((flop1 as u64) << 16)
+                | ((flop2 as u64) << 32)
+                | ((RoundStage::Deal as u64) << 48),
+            */
+            0,
+            enemy_hole0 as u64 | ((enemy_hole1 as u64) << 16), //| ((player_rank as u64) << 32),
+            //turn as u64 | ((river as u64) << 16),  // attention mask
+            0,
+        ];
+
+        enemy_net.l0.forward(&inputs, &mut h0);
+        enemy_net.l1.forward(&h0, &mut h1);
+
+        // residual skip connection
+        for i in 0..8 {
+            h1[i] ^= h0[i];
+        }
+
+        enemy_net.l2.forward(&h1, &mut h2);
+        enemy_net.l3.forward(&h2, &mut out);
+
+        let enmey_output: u64 = out[0];
+
+        // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+        let enemy_action = enmey_output & 0b111;
+        let enemy_bet_bits = (enmey_output >> 3) & 0x1FF;
+        let enemy_attention_mask = enmey_output >> 31;
+
+        if enemy_action == 0b111 {
+            let bet_shift = enemy_bet_bits.count_ones().min(7);
+            player_chips >>= bet_shift;
+            player_pot = (player_pot | 1) << bet_shift;
+        }
+
         if enemy_action == 0b0000_0111 {
-            let shift = enemy_bet_amt.count_ones().min(7);
+            let shift = enemy_bet_bits.count_ones().min(7);
             enemy_chips >>= shift;
             enemy_pot = (enemy_pot | 1) << shift;
         }
 
-        let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
-
+        // Player
         let inputs: [u64; 5] = [
             player_pot as u64 | ((player_chips as u64) << 16),
             enemy_pot as u64 | ((enemy_chips as u64) << 16),
@@ -374,16 +419,16 @@ fn main() {
             0,
         ];
 
-        net.l0.forward(&inputs, &mut h0);
-        net.l1.forward(&h0, &mut h1);
+        player_net.l0.forward(&inputs, &mut h0);
+        player_net.l1.forward(&h0, &mut h1);
 
         // residual skip connection
         for i in 0..8 {
             h1[i] ^= h0[i];
         }
 
-        net.l2.forward(&h1, &mut h2);
-        net.l3.forward(&h2, &mut out);
+        player_net.l2.forward(&h1, &mut h2);
+        player_net.l3.forward(&h2, &mut out);
 
         let output: u64 = out[0];
 
@@ -414,16 +459,16 @@ fn main() {
                 0 | ((attention_mask as u64) << 32),
             ];
 
-            net.l0.forward(&inputs, &mut h0);
-            net.l1.forward(&h0, &mut h1);
+            player_net.l0.forward(&inputs, &mut h0);
+            player_net.l1.forward(&h0, &mut h1);
 
             // residual skip connection
             for i in 0..8 {
                 h1[i] ^= h0[i];
             }
 
-            net.l2.forward(&h1, &mut h2);
-            net.l3.forward(&h2, &mut out);
+            player_net.l2.forward(&h1, &mut h2);
+            player_net.l3.forward(&h2, &mut out);
 
             let output: u64 = out[0];
 
@@ -454,16 +499,16 @@ fn main() {
                     turn as u64 | ((attention_mask as u64) << 32),
                 ];
 
-                net.l0.forward(&inputs, &mut h0);
-                net.l1.forward(&h0, &mut h1);
+                player_net.l0.forward(&inputs, &mut h0);
+                player_net.l1.forward(&h0, &mut h1);
 
                 // residual skip connection
                 for i in 0..8 {
                     h1[i] ^= h0[i];
                 }
 
-                net.l2.forward(&h1, &mut h2);
-                net.l3.forward(&h2, &mut out);
+                player_net.l2.forward(&h1, &mut h2);
+                player_net.l3.forward(&h2, &mut out);
 
                 let output: u64 = out[0];
 
@@ -494,16 +539,16 @@ fn main() {
                         turn as u64 | ((river as u64) << 16) | ((attention_mask as u64) << 32),
                     ];
 
-                    net.l0.forward(&inputs, &mut h0);
-                    net.l1.forward(&h0, &mut h1);
+                    player_net.l0.forward(&inputs, &mut h0);
+                    player_net.l1.forward(&h0, &mut h1);
 
                     // residual skip connection
                     for i in 0..8 {
                         h1[i] ^= h0[i];
                     }
 
-                    net.l2.forward(&h1, &mut h2);
-                    net.l3.forward(&h2, &mut out);
+                    player_net.l2.forward(&h1, &mut h2);
+                    player_net.l3.forward(&h2, &mut out);
 
                     let output: u64 = out[0];
 
@@ -556,19 +601,7 @@ fn main() {
                             hand_rank_eval(i0, i1, i2, i3, i4);
                         }
 
-                        // TODO handle all regrets
-
-                        // TODO STE backprop and model saving
-                        if (epoch % 500) == 0 {
-                            println!("Epoch {}", epoch);
-                            /*
-                            // debugging bits on one neuron
-                            println!("L0[0]: {:064b}", h0[0]);
-                            println!("L1[0]: {:064b}", h1[0]);
-                            println!("L2[0]: {:064b}", h2[0]);
-                            println!("OUT  : {:064b}", output);
-                            */
-                        }
+                        // TODO! compute winner
 
                         continue;
                     }
@@ -576,9 +609,9 @@ fn main() {
             }
         }
 
-        // TODO handle fold regrets
+        // TODO! handle fold
 
-        // TODO STE backprop and model saving
+        // Debug
         if (epoch % 500) == 0 {
             println!("Epoch {}", epoch);
             /*
