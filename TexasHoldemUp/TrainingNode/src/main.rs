@@ -1363,15 +1363,15 @@ fn main() {
                         .map(|&candidate| {
                             let mut row_winner_acc = candidate;
                             for &opponent in candinate_arena.iter() {
-                                row_winner_acc = select_winner(row_winner_acc, opponent);
+                                row_winner_acc = check_winner(row_winner_acc, opponent);
                             }
                             row_winner_acc
                         })
-                        .reduce_with(|a, b| select_winner(a, b))
+                        .reduce_with(|a, b| check_winner(a, b))
                         .expect("candinate_arena cannot be empty")
                 });
 
-                let true_winner_acc = select_winner(last_great_winner, arena_winner);
+                let true_winner_acc = check_winner(last_great_winner, arena_winner);
                 last_great_winner = true_winner_acc;
 
                 save_to_file("models/WinnerWorkerSave.bin", &true_winner_acc)
