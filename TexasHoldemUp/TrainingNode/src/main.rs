@@ -959,7 +959,7 @@ fn main() {
             get_lan_ip().expect("Failed to print LAN IP")
         );
 
-        const BATCH_SIZE: usize = 16;
+        const BATCH_SIZE: usize = 4;
         const SAVE_PATH: &str = "models/WinnerManagerSave.bin";
 
         #[repr(align(64))]
