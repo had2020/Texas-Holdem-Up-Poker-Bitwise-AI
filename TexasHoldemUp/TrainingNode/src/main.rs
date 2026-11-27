@@ -1374,8 +1374,9 @@ fn main() {
                 let true_winner_acc = check_winner(last_great_winner, arena_winner);
                 last_great_winner = true_winner_acc;
 
+                /*
                 save_to_file("models/WinnerWorkerSave.bin", &true_winner_acc)
-                    .expect("Failed to write!");
+                    .expect("Failed to write!");*/
                 send_over_tcp(&manger_addr, &true_winner_acc).unwrap();
             }
         }
