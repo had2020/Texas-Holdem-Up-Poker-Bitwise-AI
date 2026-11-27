@@ -1,0 +1,4 @@
+    Checking Worker v0.0.2 (/Users/hadrian/Developer/GitRepos/Texas-Holdem-Up-Poker-Bitwise-AI/TexasHoldemUp/Worker)
+error: could not compile `Worker` (bin "Worker" test) due to 3 previous errors; 7 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `Worker` (bin "Worker") due to 3 previous errors; 7 warnings emitted

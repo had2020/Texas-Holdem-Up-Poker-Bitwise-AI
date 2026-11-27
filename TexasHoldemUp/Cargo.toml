@@ -1,8 +1,0 @@
-[package]
-name = "TexasHoldemUp"
-version = "0.0.1"
-edition = "2024"
-
-[dependencies]
-rand = "0.10.4"
-rayon = "=1.12.0"
