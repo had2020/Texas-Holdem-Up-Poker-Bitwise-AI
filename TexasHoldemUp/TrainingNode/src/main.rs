@@ -878,6 +878,433 @@ fn select_winner(player: NueralNet, enemy: NueralNet) -> NueralNet {
     }
 }
 
+/// non-mutative
+#[inline(always)]
+fn check_winner(player: NueralNet, enemy: NueralNet) -> NueralNet {
+    // both should come from the candinate pool
+    let mut player_net = player;
+    let mut player_rating = 0_u32;
+    let mut enemy_net = enemy;
+    let mut enemy_rating = 0_u32;
+
+    let mut h0 = [0u64; 8];
+    let mut h1 = [0u64; 8];
+    let mut h2 = [0u64; 4];
+    let mut out = [0u64; 1];
+
+    let training_epochs: usize = 4096;
+    for _ in 0..training_epochs {
+        let mut prng_state: u64 = random();
+
+        let pre_seed: u64 = splitmix64(&mut prng_state);
+        let seed: usize = ((pre_seed & 0b1111_1).saturating_sub(12)) as usize;
+
+        // Other player hole cards
+        let enemy_hole0: u16 = DECK[seed ^ 7];
+        let enemy_hole1: u16 = DECK[seed ^ 32];
+        let mut enemy_chips: u8 = 0b1111_1111;
+        let mut enemy_pot: u8 = 0;
+
+        // Game view
+        let flop0: u16 = DECK[seed ^ 22];
+        let flop1: u16 = DECK[seed ^ 27];
+        let flop2: u16 = DECK[seed ^ 12];
+
+        let turn: u16 = DECK[seed ^ 4];
+        let river: u16 = DECK[seed ^ 30];
+
+        let hole0: u16 = DECK[seed ^ 17];
+        let hole1: u16 = DECK[seed ^ 2];
+        let mut player_chips: u8 = 0b1111_1111;
+        let mut player_pot: u8 = 0;
+
+        // Deal Stage & Preflop
+
+        // enemy
+        let inputs: [u64; 5] = [
+            enemy_pot as u64 | ((enemy_chips as u64) << 16),
+            player_pot as u64 | ((player_chips as u64) << 16),
+            /*
+            flop0 as u64
+                | ((flop1 as u64) << 16)
+                | ((flop2 as u64) << 32)
+                | ((RoundStage::Deal as u64) << 48),
+            */
+            0,
+            enemy_hole0 as u64 | ((enemy_hole1 as u64) << 16), //| ((player_rank as u64) << 32),
+            //turn as u64 | ((river as u64) << 16),  // attention mask
+            0,
+        ];
+
+        enemy_net.l0.forward(&inputs, &mut h0);
+        enemy_net.l1.forward(&h0, &mut h1);
+
+        // residual skip connection
+        for i in 0..8 {
+            h1[i] ^= h0[i];
+        }
+
+        enemy_net.l2.forward(&h1, &mut h2);
+        enemy_net.l3.forward(&h2, &mut out);
+
+        let enmey_output: u64 = out[0];
+
+        // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+        let enemy_action = enmey_output & 0b111;
+        let enemy_bet_bits = (enmey_output >> 3) & 0x1FF;
+        let enemy_attention_mask = enmey_output >> 31;
+
+        if enemy_action == 0b111 {
+            let bet_shift = enemy_bet_bits.count_ones().min(7);
+            enemy_chips >>= bet_shift;
+            enemy_pot = (enemy_pot | 1) << bet_shift;
+        }
+
+        // Player
+        let inputs: [u64; 5] = [
+            player_pot as u64 | ((player_chips as u64) << 16),
+            enemy_pot as u64 | ((enemy_chips as u64) << 16),
+            /*
+            flop0 as u64
+                | ((flop1 as u64) << 16)
+                | ((flop2 as u64) << 32)
+                | ((RoundStage::Deal as u64) << 48),
+            */
+            0,
+            hole0 as u64 | ((hole1 as u64) << 16), //| ((player_rank as u64) << 32),
+            //turn as u64 | ((river as u64) << 16),  // attention mask
+            0,
+        ];
+
+        player_net.l0.forward(&inputs, &mut h0);
+        player_net.l1.forward(&h0, &mut h1);
+
+        // residual skip connection
+        for i in 0..8 {
+            h1[i] ^= h0[i];
+        }
+
+        player_net.l2.forward(&h1, &mut h2);
+        player_net.l3.forward(&h2, &mut out);
+
+        let output: u64 = out[0];
+
+        // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+        let action = output & 0b111;
+        let bet_bits = (output >> 3) & 0x1FF;
+        let attention_mask = output >> 31;
+
+        if action == 0b111 {
+            let bet_shift = bet_bits.count_ones().min(7);
+            player_chips >>= bet_shift;
+            player_pot = (player_pot | 1) << bet_shift;
+        }
+
+        if action != 0b000 {
+            // Flop
+
+            let enemy_rank: u16 = hand_rank_eval(flop0, flop1, flop2, enemy_hole0, enemy_hole1);
+
+            let inputs: [u64; 5] = [
+                enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                player_pot as u64 | ((player_chips as u64) << 16),
+                flop0 as u64
+                    | ((flop1 as u64) << 16)
+                    | ((flop2 as u64) << 32)
+                    | ((RoundStage::Deal as u64) << 48),
+                enemy_hole0 as u64 | ((enemy_hole1 as u64) << 16) | ((enemy_rank as u64) << 32),
+                0 | ((attention_mask as u64) << 32),
+            ];
+
+            enemy_net.l0.forward(&inputs, &mut h0);
+            enemy_net.l1.forward(&h0, &mut h1);
+
+            // residual skip connection
+            for i in 0..8 {
+                h1[i] ^= h0[i];
+            }
+
+            enemy_net.l2.forward(&h1, &mut h2);
+            enemy_net.l3.forward(&h2, &mut out);
+
+            let enmey_output: u64 = out[0];
+
+            // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+            let enemy_action = enmey_output & 0b111;
+            let enemy_bet_bits = (enmey_output >> 3) & 0x1FF;
+            let enemy_attention_mask = enmey_output >> 31;
+
+            if enemy_action == 0b111 {
+                let bet_shift = enemy_bet_bits.count_ones().min(7);
+                enemy_chips >>= bet_shift;
+                enemy_pot = (enemy_pot | 1) << bet_shift;
+            }
+
+            let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
+
+            let inputs: [u64; 5] = [
+                player_pot as u64 | ((player_chips as u64) << 16),
+                enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                flop0 as u64
+                    | ((flop1 as u64) << 16)
+                    | ((flop2 as u64) << 32)
+                    | ((RoundStage::Deal as u64) << 48),
+                hole0 as u64 | ((hole1 as u64) << 16) | ((player_rank as u64) << 32),
+                0 | ((attention_mask as u64) << 32),
+            ];
+
+            player_net.l0.forward(&inputs, &mut h0);
+            player_net.l1.forward(&h0, &mut h1);
+
+            // residual skip connection
+            for i in 0..8 {
+                h1[i] ^= h0[i];
+            }
+
+            player_net.l2.forward(&h1, &mut h2);
+            player_net.l3.forward(&h2, &mut out);
+
+            let output: u64 = out[0];
+
+            // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+            let action = output & 0b111;
+            let bet_bits = (output >> 3) & 0x1FF;
+            let attention_mask = output >> 31;
+
+            if action == 0b111 {
+                let bet_shift = bet_bits.count_ones().min(7);
+                player_chips >>= bet_shift;
+                player_pot = (player_pot | 1) << bet_shift;
+            }
+
+            if action != 0b000 {
+                // Turn
+
+                let enemy_rank: u16 = hand_rank_eval(flop0, flop1, flop2, enemy_hole0, enemy_hole1);
+
+                let inputs: [u64; 5] = [
+                    enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                    player_pot as u64 | ((player_chips as u64) << 16),
+                    flop0 as u64
+                        | ((flop1 as u64) << 16)
+                        | ((flop2 as u64) << 32)
+                        | ((RoundStage::Deal as u64) << 48),
+                    enemy_hole0 as u64 | ((enemy_hole1 as u64) << 16) | ((enemy_rank as u64) << 32),
+                    turn as u64 | ((attention_mask as u64) << 32),
+                ];
+
+                enemy_net.l0.forward(&inputs, &mut h0);
+                enemy_net.l1.forward(&h0, &mut h1);
+
+                // residual skip connection
+                for i in 0..8 {
+                    h1[i] ^= h0[i];
+                }
+
+                enemy_net.l2.forward(&h1, &mut h2);
+                enemy_net.l3.forward(&h2, &mut out);
+
+                let enmey_output: u64 = out[0];
+
+                // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+                let enemy_action = enmey_output & 0b111;
+                let enemy_bet_bits = (enmey_output >> 3) & 0x1FF;
+                let enemy_attention_mask = enmey_output >> 31;
+
+                if enemy_action == 0b111 {
+                    let bet_shift = enemy_bet_bits.count_ones().min(7);
+                    enemy_chips >>= bet_shift;
+                    enemy_pot = (enemy_pot | 1) << bet_shift;
+                }
+
+                let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
+
+                let inputs: [u64; 5] = [
+                    player_pot as u64 | ((player_chips as u64) << 16),
+                    enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                    flop0 as u64
+                        | ((flop1 as u64) << 16)
+                        | ((flop2 as u64) << 32)
+                        | ((RoundStage::Deal as u64) << 48),
+                    hole0 as u64 | ((hole1 as u64) << 16) | ((player_rank as u64) << 32),
+                    turn as u64 | ((attention_mask as u64) << 32),
+                ];
+
+                player_net.l0.forward(&inputs, &mut h0);
+                player_net.l1.forward(&h0, &mut h1);
+
+                // residual skip connection
+                for i in 0..8 {
+                    h1[i] ^= h0[i];
+                }
+
+                player_net.l2.forward(&h1, &mut h2);
+                player_net.l3.forward(&h2, &mut out);
+
+                let output: u64 = out[0];
+
+                // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+                let action = output & 0b111;
+                let bet_bits = (output >> 3) & 0x1FF;
+                let attention_mask = output >> 31;
+
+                if action == 0b111 {
+                    let bet_shift = bet_bits.count_ones().min(7);
+                    player_chips >>= bet_shift;
+                    player_pot = (player_pot | 1) << bet_shift;
+                }
+
+                if action != 0b000 {
+                    // River
+
+                    let enemy_rank: u16 =
+                        hand_rank_eval(flop0, flop1, flop2, enemy_hole0, enemy_hole1);
+
+                    let inputs: [u64; 5] = [
+                        enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                        player_pot as u64 | ((player_chips as u64) << 16),
+                        flop0 as u64
+                            | ((flop1 as u64) << 16)
+                            | ((flop2 as u64) << 32)
+                            | ((RoundStage::Deal as u64) << 48),
+                        enemy_hole0 as u64
+                            | ((enemy_hole1 as u64) << 16)
+                            | ((enemy_rank as u64) << 32),
+                        turn as u64 | ((river as u64) << 16) | ((attention_mask as u64) << 32),
+                    ];
+
+                    enemy_net.l0.forward(&inputs, &mut h0);
+                    enemy_net.l1.forward(&h0, &mut h1);
+
+                    // residual skip connection
+                    for i in 0..8 {
+                        h1[i] ^= h0[i];
+                    }
+
+                    enemy_net.l2.forward(&h1, &mut h2);
+                    enemy_net.l3.forward(&h2, &mut out);
+
+                    let enmey_output: u64 = out[0];
+
+                    // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+                    let enemy_action = enmey_output & 0b111;
+                    let enemy_bet_bits = (enmey_output >> 3) & 0x1FF;
+                    let enemy_attention_mask = enmey_output >> 31;
+
+                    if enemy_action == 0b111 {
+                        let bet_shift = enemy_bet_bits.count_ones().min(7);
+                        enemy_chips >>= bet_shift;
+                        enemy_pot = (enemy_pot | 1) << bet_shift;
+                    }
+
+                    let player_rank: u16 = hand_rank_eval(flop0, flop1, flop2, hole0, hole1);
+
+                    let inputs: [u64; 5] = [
+                        player_pot as u64 | ((player_chips as u64) << 16),
+                        enemy_pot as u64 | ((enemy_chips as u64) << 16),
+                        flop0 as u64
+                            | ((flop1 as u64) << 16)
+                            | ((flop2 as u64) << 32)
+                            | ((RoundStage::Deal as u64) << 48),
+                        hole0 as u64 | ((hole1 as u64) << 16) | ((player_rank as u64) << 32),
+                        turn as u64 | ((river as u64) << 16) | ((attention_mask as u64) << 32),
+                    ];
+
+                    player_net.l0.forward(&inputs, &mut h0);
+                    player_net.l1.forward(&h0, &mut h1);
+
+                    // residual skip connection
+                    for i in 0..8 {
+                        h1[i] ^= h0[i];
+                    }
+
+                    player_net.l2.forward(&h1, &mut h2);
+                    player_net.l3.forward(&h2, &mut out);
+
+                    let output: u64 = out[0];
+
+                    // output: [0-2 Action][3-11 Bet Amt][31-63 Attention Mask]
+                    let action = output & 0b111;
+                    let bet_bits = (output >> 3) & 0x1FF;
+
+                    if action == 0b111 {
+                        let bet_shift = bet_bits.count_ones().min(7);
+                        player_chips >>= bet_shift;
+                        player_pot = (player_pot | 1) << bet_shift;
+                    }
+
+                    if action != 0b000 {
+                        // Showdown
+                        {
+                            let enmey_total = best_set_of_seven_cards(
+                                flop0,
+                                flop1,
+                                flop2,
+                                enemy_hole0,
+                                enemy_hole1,
+                                turn,
+                                river,
+                            );
+                            let player_total = best_set_of_seven_cards(
+                                flop0, flop1, flop2, hole0, hole1, turn, river,
+                            );
+                            if player_total > enmey_total {
+                                player_rating += ((player_chips as u64)
+                                    | ((player_pot as u64) >> 16)
+                                    | (enemy_pot as u64) >> 32)
+                                    .count_ones();
+                                enemy_rating = enemy_rating.saturating_sub(enemy_pot.count_ones());
+                            } else if enmey_total > player_total {
+                                enemy_rating += ((enemy_chips as u64)
+                                    | ((enemy_pot as u64) >> 16)
+                                    | (player_pot as u64) >> 32)
+                                    .count_ones();
+                                player_rating =
+                                    player_rating.saturating_sub(player_pot.count_ones());
+                            }
+                        }
+
+                        /*
+                        if (epoch % 500) == 0 {
+                            println!("Epoch {}", epoch);
+                            // debugging bits on one neuron
+                            println!("Actions: Player: {}, Enemy: {}", action, enemy_action);
+                            println!(
+                                "Ratings: Player: {}, Enemy: {}",
+                                player_rating, enemy_rating
+                            );
+                            println!("L0[0]: {:064b}", h0[0]);
+                            println!("L1[0]: {:064b}", h1[0]);
+                            println!("L2[0]: {:064b}", h2[0]);
+                            println!("OUT  : {:064b}", output);
+                        }
+                        */
+
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if enemy_action == 0b000 {
+            player_rating +=
+                ((player_chips as u64) | ((player_pot as u64) >> 16) | (enemy_pot as u64) >> 32)
+                    .count_ones();
+            enemy_rating = enemy_rating.saturating_sub(enemy_pot.count_ones());
+        } else {
+            enemy_rating +=
+                ((enemy_chips as u64) | ((enemy_pot as u64) >> 16) | (player_pot as u64) >> 32)
+                    .count_ones();
+            player_rating = player_rating.saturating_sub(player_pot.count_ones());
+        }
+    }
+    if player_rating > enemy_rating {
+        return player_net;
+    } else {
+        return enemy_net;
+    }
+}
+
 use rayon::prelude::*;
 use std::net::{IpAddr, UdpSocket};
 
@@ -997,13 +1424,13 @@ fn main() {
                         println!("{:?}", i);
                         let mut row_winner_acc: NueralNet = candinate_arena[i];
                         for j in 0..candinate_arena.len() {
-                            row_winner_acc = select_winner(row_winner_acc, candinate_arena[j]);
+                            row_winner_acc = check_winner(row_winner_acc, candinate_arena[j]);
                         }
-                        true_winner_acc = select_winner(true_winner_acc, row_winner_acc);
+                        true_winner_acc = check_winner(true_winner_acc, row_winner_acc);
                     }
 
                     if let Some(prev_champ) = &last_great_winner {
-                        true_winner_acc = select_winner(**prev_champ, true_winner_acc);
+                        true_winner_acc = check_winner(**prev_champ, true_winner_acc);
                     }
 
                     save_to_file(SAVE_PATH, &true_winner_acc)
