@@ -2,6 +2,10 @@
 
 */target
 
+/TexasHoldemUp/TrainingNode/target
+
+*/.DS_Store
+
 # Added by cargo
 #
 # already existing elements were commented out

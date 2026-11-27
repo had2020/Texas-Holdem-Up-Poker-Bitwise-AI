@@ -84,7 +84,7 @@ pub fn send_over_tcp<T>(addr: &str, data: &T) -> Result<()> {
 
 static LISTENER: OnceLock<TcpListener> = OnceLock::new();
 
-pub fn recv_over_tcp<T>(bind_addr: &str) -> Result<T> {
+pub fn recv_over_tcp<T>(bind_addr: &str) -> Result<Box<T>> {
     let listener = match LISTENER.get() {
         Some(l) => l,
         None => {
@@ -93,12 +93,9 @@ pub fn recv_over_tcp<T>(bind_addr: &str) -> Result<T> {
         }
     };
 
-    let (mut stream, _peer) = listener.accept()?;
-    let mut uninit = MaybeUninit::<T>::uninit();
-
-    let bytes = unsafe {
-        std::slice::from_raw_parts_mut(uninit.as_mut_ptr() as *mut u8, std::mem::size_of::<T>())
-    };
+    let (mut stream, peer) = listener.accept()?;
+    let mut uninit = Box::<T>::new_uninit();
+    let bytes = unsafe { as_bytes_mut(&mut uninit) };
     stream.read_exact(bytes)?;
 
     Ok(unsafe { uninit.assume_init() })

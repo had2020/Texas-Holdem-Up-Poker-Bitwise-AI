@@ -937,15 +937,13 @@ fn main() {
                 last_great_winner = true_winner_acc;
                 save_to_file("models/WinnerWorkerSave.bin", &true_winner_acc)
                     .expect("Failed to write!");
-                unsafe {
-                    send_over_tcp(&manger_addr, &true_winner_acc).unwrap_unchecked();
-                }
+                send_over_tcp(&manger_addr, &true_winner_acc).unwrap();
             }
         }
     } else {
         println!("Running manager node...");
         println!(
-            "Manager IP: {}",
+            "Manager IP: {}:8080",
             get_lan_ip().expect("Failed to print LAN IP")
         );
 
@@ -965,64 +963,62 @@ fn main() {
                 .expect("Failed to seed buffer pool");
         }
 
-        std::thread::spawn(move || {
-            let last_great_winner: Option<NueralNet> =
-                load_from_file::<_, NueralNet>(SAVE_PATH).ok().map(|b| *b);
+        std::thread::Builder::new()
+            .name("eval".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let mut last_great_winner: Option<Box<NueralNet>> =
+                    load_from_file::<_, NueralNet>(SAVE_PATH).ok();
 
-            match &last_great_winner {
-                Some(_) => println!("[EVAL] Loaded previous champion from {}", SAVE_PATH),
-                None => println!("[EVAL] No saved champion found; waiting for first batch..."),
-            }
+                match &last_great_winner {
+                    Some(_) => println!("[EVAL] Loaded previous champion from {}", SAVE_PATH),
+                    None => println!("[EVAL] No saved champion found; waiting for first batch..."),
+                }
 
-            let eval_batch = |nets: &[NueralNet; BATCH_SIZE]| -> NueralNet {
-                nets.par_iter()
-                    .map(|&candidate| {
-                        let mut row_winner = candidate;
-                        for &opponent in nets.iter() {
-                            row_winner = select_winner(row_winner, opponent);
+                let mut batch_num: usize = 1;
+                while let Ok(batch) = work_rx.recv() {
+                    println!("[EVAL] Evaluating batch #{}...", batch_num);
+                    let candinate_arena = &batch.0;
+
+                    let mut true_winner_acc: NueralNet = candinate_arena[0];
+                    for i in 0..candinate_arena.len() {
+                        println!("{:?}", i);
+                        let mut row_winner_acc: NueralNet = candinate_arena[i];
+                        for j in 0..candinate_arena.len() {
+                            row_winner_acc = select_winner(row_winner_acc, candinate_arena[j]);
                         }
-                        row_winner
-                    })
-                    .reduce_with(|a, b| select_winner(a, b))
-                    .unwrap()
-            };
+                        true_winner_acc = select_winner(true_winner_acc, row_winner_acc);
+                    }
 
-            let mut reigning_champ: NueralNet = match last_great_winner {
-                Some(saved) => saved,
-                None => {
-                    let Ok(first_batch) = work_rx.recv() else {
-                        return;
-                    };
-                    println!("[EVAL] Evaluating initial batch of {}...", BATCH_SIZE);
-                    let champ = eval_batch(&first_batch.0);
-                    save_to_file(SAVE_PATH, &champ).expect("Failed to write manager winner!");
-                    println!("[EVAL] Saved initial champion.");
+                    if let Some(prev_champ) = &last_great_winner {
+                        true_winner_acc = select_winner(**prev_champ, true_winner_acc);
+                    }
+
+                    save_to_file(SAVE_PATH, &true_winner_acc)
+                        .expect("Failed to write manager winner!");
+                    println!("[EVAL] Finished batch #{} and saved champion.", batch_num);
+
+                    match &mut last_great_winner {
+                        Some(champ_box) => **champ_box = true_winner_acc,
+                        None => {
+                            let mut b = Box::<NueralNet>::new_uninit();
+                            unsafe {
+                                b.as_mut_ptr().write(true_winner_acc);
+                                last_great_winner = Some(b.assume_init());
+                            }
+                        }
+                    }
+
+                    batch_num += 1;
 
                     let _ = free_tx.send(unsafe {
                         Box::from_raw(
-                            Box::into_raw(first_batch) as *mut std::mem::MaybeUninit<AlignedBatch>
+                            Box::into_raw(batch) as *mut std::mem::MaybeUninit<AlignedBatch>
                         )
                     });
-                    champ
                 }
-            };
-
-            let mut batch_num: usize = 1;
-            while let Ok(batch) = work_rx.recv() {
-                println!("[EVAL] Evaluating batch #{}...", batch_num);
-                let batch_winner = eval_batch(&batch.0);
-
-                reigning_champ = select_winner(reigning_champ, batch_winner);
-
-                save_to_file(SAVE_PATH, &reigning_champ).expect("Failed to write manager winner!");
-                println!("[EVAL] Finished batch #{} and saved champion.", batch_num);
-                batch_num += 1;
-
-                let _ = free_tx.send(unsafe {
-                    Box::from_raw(Box::into_raw(batch) as *mut std::mem::MaybeUninit<AlignedBatch>)
-                });
-            }
-        });
+            })
+            .expect("Failed to spawn evaluator thread");
 
         let mut batch = free_rx.recv().expect("Buffer pool disconnected");
         let mut count: usize = 0;
@@ -1030,7 +1026,7 @@ fn main() {
         println!("[TCP] Listening on 0.0.0.0:8080...");
 
         loop {
-            let net: NueralNet = recv_over_tcp("0.0.0.0:8080").expect("TCP recv failed");
+            let net: NueralNet = *recv_over_tcp("0.0.0.0:8080").expect("TCP recv failed");
             unsafe {
                 let base_ptr = batch.as_mut_ptr() as *mut NueralNet;
                 base_ptr.add(count).write(net);
