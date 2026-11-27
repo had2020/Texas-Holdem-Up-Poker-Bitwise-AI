@@ -899,6 +899,12 @@ fn main() {
         println!("Running worker node...");
         let threads = rayon::current_num_threads();
 
+        let arena_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .stack_size(16 * 1024 * 1024)
+            .build()
+            .expect("Failed to build arena thread pool");
+
         let mut candinate_arena: Vec<NueralNet> = (0..(threads * 2))
             .into_par_iter()
             .map_init(|| random(), |seed, _| NueralNet::new(splitmix64(seed)))
@@ -923,18 +929,24 @@ fn main() {
             );
 
             candinate_arena.rotate_left(1);
-            if (epoch % 100) == 0 {
-                let mut true_winner_acc: NueralNet = candinate_arena[0];
-                for i in 0..candinate_arena.len() {
-                    println!("{:?}", i);
-                    let mut row_winner_acc: NueralNet = candinate_arena[i];
-                    for j in 0..candinate_arena.len() {
-                        row_winner_acc = select_winner(row_winner_acc, candinate_arena[j]);
-                    }
-                    true_winner_acc = select_winner(true_winner_acc, row_winner_acc);
-                }
-                true_winner_acc = select_winner(last_great_winner, true_winner_acc);
+            if (epoch % 10) == 0 {
+                let arena_winner: NueralNet = arena_pool.install(|| {
+                    candinate_arena
+                        .par_iter()
+                        .map(|&candidate| {
+                            let mut row_winner_acc = candidate;
+                            for &opponent in candinate_arena.iter() {
+                                row_winner_acc = select_winner(row_winner_acc, opponent);
+                            }
+                            row_winner_acc
+                        })
+                        .reduce_with(|a, b| select_winner(a, b))
+                        .expect("candinate_arena cannot be empty")
+                });
+
+                let true_winner_acc = select_winner(last_great_winner, arena_winner);
                 last_great_winner = true_winner_acc;
+
                 save_to_file("models/WinnerWorkerSave.bin", &true_winner_acc)
                     .expect("Failed to write!");
                 send_over_tcp(&manger_addr, &true_winner_acc).unwrap();
