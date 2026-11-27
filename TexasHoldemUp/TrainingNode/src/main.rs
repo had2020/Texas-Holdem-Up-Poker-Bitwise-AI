@@ -1356,7 +1356,7 @@ fn main() {
             );
 
             candinate_arena.rotate_left(1);
-            if (epoch % 10) == 0 {
+            if (epoch % 25) == 0 {
                 let arena_winner: NueralNet = arena_pool.install(|| {
                     candinate_arena
                         .par_iter()
