@@ -1,1 +1,0 @@
-nnet::_::<impl Deserialize<'de> for nnet::BinarizedLayer<IN_CHUNKS, OUT_NEURONS, OUT_CHUNKS>>::deserialize::__Field
