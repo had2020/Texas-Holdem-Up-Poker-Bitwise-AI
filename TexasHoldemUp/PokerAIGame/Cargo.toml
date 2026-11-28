@@ -1,0 +1,8 @@
+[package]
+name = "PokerAIGame"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+TerimalRtdm = "0.0.4"
+rand = "0.10.4"
