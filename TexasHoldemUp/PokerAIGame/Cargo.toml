@@ -4,5 +4,5 @@ version = "0.0.1"
 edition = "2024"
 
 [dependencies]
-TerimalRtdm = "0.0.4"
+TerimalRtdm = { version = "0.0.5", features = ["minifb"] }
 rand = "0.10.4"
